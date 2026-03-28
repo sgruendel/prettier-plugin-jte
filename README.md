@@ -1,5 +1,7 @@
 # prettier-plugin-jte
 
+[![CI](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yml/badge.svg)](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yml)
+
 Prettier plugin for formatting Java JTE templates with Prettier.
 
 This plugin targets Java-style `.jte` files and formats JTE directives while delegating HTML layout to Prettier's HTML printer.
