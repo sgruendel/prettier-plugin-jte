@@ -1,10 +1,12 @@
 {
   "compilerOptions": {
+    "rootDir": "./src",
     "outDir": "./lib",
     "target": "esnext",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["esnext"],
+    "types": ["node"],
     "declaration": true,
     "strictNullChecks": true,
     "strict": true
