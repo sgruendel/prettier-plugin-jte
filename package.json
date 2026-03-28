@@ -1,0 +1,44 @@
+{
+  "name": "prettier-plugin-jte",
+  "version": "1.0.0",
+  "description": "Prettier plugin for formatting Java JTE templates.",
+  "author": "Stefan Gründel",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sgruendel/prettier-plugin-jte.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sgruendel/prettier-plugin-jte/issues"
+  },
+  "homepage": "https://github.com/sgruendel/prettier-plugin-jte#readme",
+  "keywords": [
+    "prettier",
+    "plugin",
+    "template",
+    "html",
+    "jte",
+    "java"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "npm run build -- --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "prettier": "^3.0.0"
+  }
+}
