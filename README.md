@@ -12,7 +12,7 @@ It supports:
 - `@import` and `@param`
 - `@template...(...)` calls
 - `!{...}` local Java code blocks
-- `@\`...\`` content blocks
+- ``@`...` `` content blocks
 - `<%-- ... --%>` comments
 
 It currently focuses on Java JTE syntax only. Kotlin `.kte` syntax is out of scope.
