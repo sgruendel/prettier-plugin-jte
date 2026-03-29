@@ -80,6 +80,10 @@ const printDirective = (
   node: DirectiveNode,
   printChild?: (path: AstPath<Node>) => builders.Doc,
 ): builders.Doc => {
+  if (node.keyword === "template") {
+    return printTemplateDirective(path, node, printChild);
+  }
+
   const body = buildMultilineDoc(
     path,
     node,
@@ -96,6 +100,47 @@ const printDirective = (
   ) {
     return [builders.dedent(builders.hardline), directive, builders.hardline];
   }
+
+  return node.preNewLines > 1
+    ? builders.group([builders.trim, builders.hardline, directive])
+    : directive;
+};
+
+const printTemplateDirective = (
+  path: AstPath<Node>,
+  node: DirectiveNode,
+  printChild?: (path: AstPath<Node>) => builders.Doc,
+): builders.Doc => {
+  const match = node.content.match(
+    /^(template(?:\.[A-Za-z0-9_]+)+)\(([\s\S]*)\)$/,
+  );
+  if (!match) {
+    return ["@", node.content];
+  }
+
+  const [, templateName, rawArgs] = match;
+  const args = splitTemplateArguments(rawArgs);
+  const body =
+    args.length === 0
+      ? `${templateName}()`
+      : [
+          templateName,
+          "(",
+          builders.indent([
+            builders.softline,
+            builders.join(
+              [",", builders.line],
+              args.map((arg) =>
+                interpolatePlaceholders(path, node, arg.trim(), printChild),
+              ),
+            ),
+          ]),
+          builders.softline,
+          ")",
+        ];
+  const directive = builders.group(["@", body], {
+    shouldBreak: rawArgs.includes("\n"),
+  });
 
   return node.preNewLines > 1
     ? builders.group([builders.trim, builders.hardline, directive])
@@ -400,7 +445,84 @@ const normalizeDirectiveContent = (node: DirectiveNode): string => {
     }
   }
 
+  if (node.keyword === "template") {
+    const match = node.content.match(
+      /^(template(?:\.[A-Za-z0-9_]+)+)\(([\s\S]*)\)$/,
+    );
+    if (match && !match[2].includes("\n")) {
+      return `${match[1]}(${match[2].trim()})`;
+    }
+  }
+
   return node.content;
+};
+
+const splitTemplateArguments = (text: string): string[] => {
+  const args: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = "";
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (quote) {
+      if (char === "\n") {
+        current = current.replace(/[ \t]+$/u, "") + " ";
+        while (i + 1 < text.length && /[ \t]/.test(text[i + 1])) {
+          i++;
+        }
+        continue;
+      }
+
+      current += char;
+      if (char === "\\") {
+        i++;
+        if (i < text.length) {
+          current += text[i];
+        }
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    if (char === "(" || char === "[" || char === "{") {
+      depth++;
+      current += char;
+      continue;
+    }
+
+    if (char === ")" || char === "]" || char === "}") {
+      depth--;
+      current += char;
+      continue;
+    }
+
+    if (char === "," && depth === 0) {
+      if (current.trim()) {
+        args.push(current.trim());
+      }
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current.trim()) {
+    args.push(current.trim());
+  }
+
+  return args;
 };
 
 const splitAtElse = (node: Node): string[] => {

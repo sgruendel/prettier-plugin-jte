@@ -532,6 +532,10 @@ const matchTemplateDirective = (
   while (current < text.length && /[A-Za-z0-9_.]/.test(text[current])) {
     current++;
   }
+  const nameEnd = current;
+  while (current < text.length && /\s/.test(text[current])) {
+    current++;
+  }
   if (text[current] !== "(") {
     return null;
   }
@@ -542,13 +546,15 @@ const matchTemplateDirective = (
   }
 
   const raw = text.slice(index, end);
-  const openParen = raw.indexOf("(");
-  const header = raw.slice(1, openParen + 1);
-  const args = raw.slice(openParen + 1, -1);
+  const header = text.slice(index + 1, nameEnd);
+  const args = text.slice(current + 1, end - 1);
   return {
     raw,
     content:
-      header + parseInlineContentBlocks(args, nodes, generatePlaceholder) + ")",
+      header +
+      "(" +
+      parseInlineContentBlocks(args, nodes, generatePlaceholder) +
+      ")",
     keyword: "template",
   };
 };
@@ -612,7 +618,9 @@ const scanBalanced = (
 
     if (char === '"' || char === "'") {
       i = skipQuoted(text, i, char);
-      continue;
+      if (i >= text.length) {
+        return null;
+      }
     }
 
     if (char === openChar) {
