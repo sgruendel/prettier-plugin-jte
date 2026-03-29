@@ -1,6 +1,6 @@
 {
   "name": "prettier-plugin-jte",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Prettier plugin for formatting Java JTE templates.",
   "author": "Stefan Gründel",
   "license": "MIT",
