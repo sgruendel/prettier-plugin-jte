@@ -185,7 +185,9 @@ const printContent = (
     return "@``";
   }
 
-  const contentText = dedentText(node.content.replace(/^\n+|\n+$/g, ""), false);
+  const contentText = trimBlankEdgeLines(
+    dedentText(node.content.replace(/^\n+|\n+$/g, ""), false),
+  );
   const inner = stripLeadingIndent(
     buildMultilineDoc(path, node, contentText, printChild),
   );
@@ -435,6 +437,22 @@ const dedentText = (text: string, skipFirstLine: boolean): string => {
       return line.slice(minIndent).trimEnd();
     })
     .join("\n");
+};
+
+const trimBlankEdgeLines = (text: string): string => {
+  const lines = text.split("\n");
+  let start = 0;
+  let end = lines.length;
+
+  while (start < end && !lines[start].trim()) {
+    start++;
+  }
+
+  while (end > start && !lines[end - 1].trim()) {
+    end--;
+  }
+
+  return lines.slice(start, end).join("\n");
 };
 
 const normalizeDirectiveContent = (node: DirectiveNode): string => {
