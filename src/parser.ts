@@ -10,6 +10,7 @@ import {
   Placeholder,
   RootNode,
 } from "./jte";
+import {parseHtml} from "angular-html-parser";
 
 const NOT_FOUND = -1;
 const IGNORE_START = /^<!--\s*prettier-ignore-start\s*-->/;
@@ -29,6 +30,28 @@ export const parse: Parser<Node>["parse"] = (text) => {
 
   const generatePlaceholder = placeholderGenerator(text);
   root.content = parseFragment(text, root.nodes, generatePlaceholder);
+
+  // Validate HTML using the same parser prettier uses internally
+  const { errors } = parseHtml(root.content, {
+    canSelfClose: true,
+    allowHtmComponentClosingTags: true,
+  });
+
+  if (errors.length > 0) {
+    const error = errors[0];
+    const { msg, span: { start, end } } = error;
+    const line = start.line + 1;
+    const col = start.col;
+
+    const err = new SyntaxError(
+        `${msg} (${line}:${col + 1})`
+    );
+    (err as any).loc = {
+      start: { line, column: col + 1 },
+      end: { line: end.line + 1, column: end.col },
+    };
+    throw err;
+  }
 
   return root;
 };

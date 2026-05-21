@@ -42,5 +42,8 @@
   },
   "peerDependencies": {
     "prettier": "^3.0.0"
+  },
+  "dependencies": {
+    "angular-html-parser": "^10.6.1"
   }
 }
