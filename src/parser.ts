@@ -10,6 +10,7 @@ import {
   Placeholder,
   RootNode,
 } from "./jte";
+import {parseHtml} from "angular-html-parser";
 
 const NOT_FOUND = -1;
 const IGNORE_START = /^<!--\s*prettier-ignore-start\s*-->/;
@@ -30,6 +31,26 @@ export const parse: Parser<Node>["parse"] = (text) => {
   const generatePlaceholder = placeholderGenerator(text);
   root.content = parseFragment(text, root.nodes, generatePlaceholder);
 
+  // Validate HTML using the same parser prettier uses internally
+  const { errors } = parseHtml(root.content, {
+    canSelfClose: true,
+    allowHtmComponentClosingTags: true,
+  });
+
+  if (errors.length > 0) {
+    const error = errors[0];
+    const { msg, span: { start, end } } = error;
+    const startLine = start.line + 1;
+    const startCol = start.col + 1;
+
+    throw new PrettierParseError(
+        `${msg} (${startLine}:${startCol})`,
+        {
+          start: {line: startLine, column: startCol},
+          end: {line: end.line + 1, column: end.col + 1},
+        }
+    );
+  }
   return root;
 };
 
@@ -675,3 +696,22 @@ const replaceAt = (
 ): string => {
   return str.slice(0, start) + replacement + str.slice(start + length);
 };
+
+type ParseErrorLocation = {
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+};
+
+export class PrettierParseError extends SyntaxError {
+  loc: ParseErrorLocation;
+
+  constructor(
+      message: string,
+      loc: ParseErrorLocation
+  ) {
+    super(message);
+    this.name = "PrettierParseError";
+    this.loc = loc;
+  }
+
+}
