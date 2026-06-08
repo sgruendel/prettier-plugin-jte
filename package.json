@@ -35,15 +35,15 @@
     "prepublishOnly": "npm run test && npm run build"
   },
   "devDependencies": {
-    "@types/node": "^24.12.4",
+    "@types/node": "^24.13.1",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.8"
   },
   "peerDependencies": {
     "prettier": "^3.0.0"
   },
   "dependencies": {
-    "angular-html-parser": "^10.6.1"
+    "angular-html-parser": "^10.7.0"
   }
 }
