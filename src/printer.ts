@@ -159,15 +159,18 @@ const printCommentBlock = (node: Node): builders.Doc => {
 
 const printCode = (content: string, preNewLines: number): builders.Doc => {
   const multiline = content.includes("\n");
+  const codeText = multiline
+    ? trimBlankEdgeLines(dedentText(content, false))
+    : content.trim();
   const code = builders.group(
     multiline
       ? [
           "!{",
-          builders.indent(getMultilineGroup(content)),
+          builders.indent(getMultilineGroup(codeText)),
           builders.hardline,
           "}",
         ]
-      : ["!{", content.trim(), "}"],
+      : ["!{", codeText, "}"],
     { shouldBreak: preNewLines > 0 },
   );
 
