@@ -638,7 +638,7 @@ const scanBalanced = (
     const char = text[i];
 
     if (char === '"' || char === "'") {
-      i = skipQuoted(text, i, char);
+      i = skipQuoted(text, i);
       if (i >= text.length) {
         return null;
       }
@@ -659,7 +659,19 @@ const scanBalanced = (
   return null;
 };
 
-const skipQuoted = (text: string, index: number, quote: string): number => {
+const skipQuoted = (text: string, index: number): number => {
+  if (text.startsWith('"""', index)) {
+    let i = index + 3;
+    while (i < text.length) {
+      if (text.startsWith('"""', i) && !isEscaped(text, i)) {
+        return i + 2;
+      }
+      i++;
+    }
+    return text.length;
+  }
+
+  const quote = text[index];
   let i = index + 1;
   while (i < text.length) {
     if (text[i] === "\\") {
@@ -672,6 +684,14 @@ const skipQuoted = (text: string, index: number, quote: string): number => {
     i++;
   }
   return text.length;
+};
+
+const isEscaped = (text: string, index: number): boolean => {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
+    backslashes++;
+  }
+  return backslashes % 2 === 1;
 };
 
 const placeholderGenerator = (text: string) => {

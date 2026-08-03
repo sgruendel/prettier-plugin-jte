@@ -18,7 +18,7 @@ export const getVisitorKeys = (
     return ast.type === "root" ? ["nodes"] : [];
   }
   return Object.values(ast)
-    .filter((node) => node.type === "block")
+    .filter((node) => ["block", "content"].includes(node.type))
     .map((node) => node.id);
 };
 
@@ -58,15 +58,18 @@ export const print: Printer<Node>["print"] = (path, _options, printChild) =>
 const printExpression = (node: ExpressionNode): builders.Doc => {
   const prefix = node.unsafe ? "$unsafe{" : "${";
   const multiline = node.content.includes("\n");
+  const expressionText = multiline
+    ? trimBlankEdgeLines(dedentText(node.content, false))
+    : node.content.trim();
   const expression = builders.group(
     multiline
       ? [
           prefix,
-          builders.indent(getMultilineGroup(node.content)),
+          builders.indent(getMultilineGroup(expressionText)),
           builders.hardline,
           "}",
         ]
-      : [prefix, node.content.trim(), "}"],
+      : [prefix, expressionText, "}"],
     { shouldBreak: node.preNewLines > 0 },
   );
 
@@ -131,7 +134,7 @@ const printTemplateDirective = (
             builders.join(
               [",", builders.line],
               args.map((arg) =>
-                interpolatePlaceholders(path, node, arg.trim(), printChild),
+                printTemplateArgument(path, node, arg, printChild),
               ),
             ),
           ]),
@@ -145,6 +148,129 @@ const printTemplateDirective = (
   return node.preNewLines > 1
     ? builders.group([builders.trim, builders.hardline, directive])
     : directive;
+};
+
+const printTemplateArgument = (
+  path: AstPath<Node>,
+  node: Node,
+  text: string,
+  printChild?: (path: AstPath<Node>) => builders.Doc,
+): builders.Doc => {
+  const value = text.trim();
+  const result: builders.Doc = [];
+  let start = 0;
+
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i];
+    if (char === '"' || char === "'") {
+      i = skipQuotedText(value, i);
+      continue;
+    }
+    if (char !== "(") {
+      continue;
+    }
+
+    const end = findClosingDelimiter(value, i, "(", ")");
+    if (end === null) {
+      break;
+    }
+
+    result.push(
+      interpolatePlaceholders(path, node, value.slice(start, i), printChild),
+    );
+
+    const inner = value.slice(i + 1, end - 1);
+    const args = splitTemplateArguments(inner);
+    if (!args.length) {
+      result.push(
+        "(",
+        interpolatePlaceholders(path, node, inner.trim(), printChild),
+        ")",
+      );
+    } else {
+      result.push(
+        builders.group([
+          "(",
+          builders.indent([
+            builders.softline,
+            builders.join(
+              [",", builders.line],
+              args.map((arg) =>
+                printTemplateArgument(path, node, arg, printChild),
+              ),
+            ),
+          ]),
+          builders.softline,
+          ")",
+        ]),
+      );
+    }
+
+    start = end;
+    i = end - 1;
+  }
+
+  if (start < value.length) {
+    result.push(
+      interpolatePlaceholders(path, node, value.slice(start), printChild),
+    );
+  }
+
+  return result;
+};
+
+const findClosingDelimiter = (
+  text: string,
+  openIndex: number,
+  openChar: string,
+  closeChar: string,
+): number | null => {
+  let depth = 0;
+
+  for (let i = openIndex; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"' || char === "'") {
+      i = skipQuotedText(text, i);
+      continue;
+    }
+    if (char === openChar) {
+      depth++;
+    } else if (char === closeChar && --depth === 0) {
+      return i + 1;
+    }
+  }
+
+  return null;
+};
+
+const skipQuotedText = (text: string, start: number): number => {
+  if (text.startsWith('"""', start)) {
+    for (let i = start + 3; i < text.length; i++) {
+      if (text.startsWith('"""', i) && !isEscaped(text, i)) {
+        return i + 2;
+      }
+    }
+    return text.length;
+  }
+
+  const quote = text[start];
+  for (let i = start + 1; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++;
+    } else if (text[i] === quote) {
+      return i;
+    }
+  }
+
+  return text.length;
+};
+
+const isEscaped = (text: string, index: number): boolean => {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
+    backslashes++;
+  }
+  return backslashes % 2 === 1;
 };
 
 const printCommentBlock = (node: Node): builders.Doc => {
@@ -191,9 +317,7 @@ const printContent = (
   const contentText = trimBlankEdgeLines(
     dedentText(node.content.replace(/^\n+|\n+$/g, ""), false),
   );
-  const inner = stripLeadingIndent(
-    buildMultilineDoc(path, node, contentText, printChild),
-  );
+  const inner = buildMultilineDoc(path, node, contentText, printChild);
   if (!contentText.includes("\n")) {
     return ["@`", inner, "`"];
   }
@@ -207,31 +331,6 @@ const printContent = (
   return node.preNewLines > 1
     ? builders.group([builders.trim, builders.hardline, content])
     : content;
-};
-
-const stripLeadingIndent = (doc: builders.Doc): builders.Doc => {
-  if (!Array.isArray(doc) || doc.length < 2) {
-    return doc;
-  }
-
-  const [first, second, ...rest] = doc;
-  if (typeof first !== "string" || !isIndentDoc(second)) {
-    return doc;
-  }
-
-  return [first, ...(second.contents as builders.Doc[]), ...rest];
-};
-
-const isIndentDoc = (
-  doc: builders.Doc,
-): doc is { type: "indent"; contents: builders.Doc } => {
-  return (
-    Boolean(doc) &&
-    typeof doc === "object" &&
-    "type" in doc &&
-    doc.type === "indent" &&
-    "contents" in doc
-  );
 };
 
 export const embed: Printer<Node>["embed"] = () => {
@@ -328,19 +427,21 @@ export const embed: Printer<Node>["embed"] = () => {
 };
 
 const embedContent = (
-  path: AstPath<Node>,
+  _path: AstPath<Node>,
   node: ContentNode,
   mapped: builders.Doc[],
 ): builders.Doc => {
   if (!node.content.trim()) {
-    return "";
+    return "@``";
   }
 
-  if (node.content.includes("\n")) {
-    return builders.group(mapped);
-  }
-
-  return builders.group(mapped);
+  const inner = utils.stripTrailingHardline(builders.group(mapped));
+  return builders.group([
+    "@`",
+    builders.indent([builders.softline, inner]),
+    builders.softline,
+    "`",
+  ]);
 };
 
 const getMultilineGroup = (content: string): builders.Group => {
@@ -459,6 +560,10 @@ const trimBlankEdgeLines = (text: string): string => {
 };
 
 const normalizeDirectiveContent = (node: DirectiveNode): string => {
+  if (["import", "param"].includes(node.keyword)) {
+    return `${node.keyword} ${node.content.slice(node.keyword.length).trim()}`;
+  }
+
   if (["if", "elseif", "for"].includes(node.keyword)) {
     const match = node.content.match(/^(\w+)\s*\(([\s\S]*)\)$/);
     if (match) {
@@ -488,6 +593,17 @@ const splitTemplateArguments = (text: string): string[] => {
     const char = text[i];
 
     if (quote) {
+      if (quote === '"""') {
+        if (text.startsWith(quote, i) && !isEscaped(text, i)) {
+          current += quote;
+          i += quote.length - 1;
+          quote = null;
+        } else {
+          current += char;
+        }
+        continue;
+      }
+
       if (char === "\n") {
         current = current.replace(/[ \t]+$/u, "") + " ";
         while (i + 1 < text.length && /[ \t]/.test(text[i + 1])) {
@@ -507,6 +623,13 @@ const splitTemplateArguments = (text: string): string[] => {
       if (char === quote) {
         quote = null;
       }
+      continue;
+    }
+
+    if (text.startsWith('"""', i)) {
+      quote = '"""';
+      current += quote;
+      i += quote.length - 1;
       continue;
     }
 
