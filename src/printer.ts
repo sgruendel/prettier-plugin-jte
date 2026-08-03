@@ -10,6 +10,7 @@ import {
 } from "./jte";
 
 const NOT_FOUND = -1;
+const TEMPLATE_PLACEHOLDER_LABEL = Symbol("jte-template-placeholder");
 
 export const getVisitorKeys = (
   ast: Node | { [id: string]: Node },
@@ -363,7 +364,7 @@ export const embed: Printer<Node>["embed"] = () => {
 
         return utils.mapDoc(doc, (currentDoc) => {
           if (typeof currentDoc !== "string") {
-            return currentDoc;
+            return separateAfterTemplateCalls(currentDoc);
           }
 
           if (currentDoc === "<!-- prettier-ignore -->") {
@@ -381,23 +382,47 @@ export const embed: Printer<Node>["embed"] = () => {
 
           const res: builders.Doc = [];
           let lastEnd = 0;
+          let previousPlaceholder: string | undefined;
           for (const [start, end] of idxs) {
             if (lastEnd < start) {
-              res.push(currentDoc.slice(lastEnd, start));
+              const between = currentDoc.slice(lastEnd, start);
+              res.push(
+                !ignoreDoc &&
+                  previousPlaceholder &&
+                  /^\s+$/u.test(between) &&
+                  isTemplatePlaceholder(node, previousPlaceholder)
+                  ? builders.hardline
+                  : between,
+              );
             }
 
             const placeholder = currentDoc.slice(start, end + 1);
             if (ignoreDoc) {
               res.push(node.nodes[placeholder].originalText);
             } else {
-              res.push(path.call(print, "nodes", placeholder));
+              const printed = path.call(print, "nodes", placeholder);
+              res.push(
+                isTemplatePlaceholder(node, placeholder)
+                  ? builders.label(TEMPLATE_PLACEHOLDER_LABEL, printed)
+                  : printed,
+              );
             }
 
             lastEnd = end + 1;
+            previousPlaceholder = placeholder;
           }
 
           if (lastEnd > 0 && currentDoc.length > lastEnd) {
-            res.push(currentDoc.slice(lastEnd));
+            const trailing = currentDoc.slice(lastEnd);
+            if (
+              !ignoreDoc &&
+              previousPlaceholder &&
+              isTemplatePlaceholder(node, previousPlaceholder)
+            ) {
+              res.push(builders.hardline, trailing.trimStart());
+            } else {
+              res.push(trailing);
+            }
           }
 
           ignoreDoc = false;
@@ -424,6 +449,112 @@ export const embed: Printer<Node>["embed"] = () => {
 
     return [...mapped, builders.hardline];
   };
+};
+
+const separateAfterTemplateCalls = (doc: builders.Doc): builders.Doc => {
+  if (Array.isArray(doc)) {
+    return doc.map((part, index, parts) =>
+      index > 0 && endsWithTemplatePlaceholder(parts[index - 1])
+        ? replaceLeadingBreakWithHardline(part)
+        : part,
+    );
+  }
+
+  if (
+    !doc ||
+    typeof doc !== "object" ||
+    !("type" in doc) ||
+    doc.type !== "fill"
+  ) {
+    return doc;
+  }
+
+  return {
+    ...doc,
+    parts: doc.parts.map((part, index, parts) =>
+      isLineDoc(part) && endsWithTemplatePlaceholder(parts[index - 1])
+        ? builders.hardline
+        : part,
+    ),
+  };
+};
+
+const isLineDoc = (doc: builders.Doc | undefined): boolean =>
+  Boolean(
+    doc &&
+    typeof doc === "object" &&
+    !Array.isArray(doc) &&
+    "type" in doc &&
+    doc.type === "line",
+  );
+
+const replaceLeadingBreakWithHardline = (doc: builders.Doc): builders.Doc => {
+  if (typeof doc === "string") {
+    return /^\s+$/u.test(doc) ? builders.hardline : doc;
+  }
+  if (Array.isArray(doc)) {
+    const result = [...doc];
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] === "") {
+        continue;
+      }
+      result[i] = replaceLeadingBreakWithHardline(result[i]);
+      break;
+    }
+    return result;
+  }
+  if (isLineDoc(doc)) {
+    return builders.hardline;
+  }
+  if (doc && "contents" in doc) {
+    return {
+      ...doc,
+      contents: replaceLeadingBreakWithHardline(doc.contents),
+    };
+  }
+  if (doc?.type === "fill") {
+    const [first, ...rest] = doc.parts;
+    return {
+      ...doc,
+      parts: [replaceLeadingBreakWithHardline(first), ...rest],
+    };
+  }
+  return doc;
+};
+
+const endsWithTemplatePlaceholder = (
+  doc: builders.Doc | undefined,
+): boolean => {
+  if (!doc) {
+    return false;
+  }
+  if (typeof doc === "string") {
+    return false;
+  }
+  if (Array.isArray(doc)) {
+    for (const entry of [...doc].reverse()) {
+      if (entry === "") {
+        continue;
+      }
+      return endsWithTemplatePlaceholder(entry);
+    }
+    return false;
+  }
+  if (doc.type === "label" && doc.label === TEMPLATE_PLACEHOLDER_LABEL) {
+    return true;
+  }
+  if (doc.type === "fill") {
+    return endsWithTemplatePlaceholder(doc.parts.at(-1));
+  }
+  if ("contents" in doc) {
+    return endsWithTemplatePlaceholder(doc.contents);
+  }
+  return false;
+};
+
+const isTemplatePlaceholder = (node: Node, placeholder: string): boolean => {
+  const child = node.nodes[placeholder];
+  return child?.type === "directive" && child.keyword === "template";
 };
 
 const embedContent = (

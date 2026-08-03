@@ -90,7 +90,10 @@
             </div>
           </div>
           <hr role="separator" />
-          <div role="option">@template.lucide.circlePlus() Create timezone</div>
+          <div role="option">
+            @template.lucide.circlePlus()
+            Create timezone
+          </div>
         `
       )
     </div>
