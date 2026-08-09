@@ -21,7 +21,9 @@
         Map.of("class", "order-1 mt-6", "data-view", "key-personnel")),
       new BasecoatTab( "Focus Documents", null, Map.of("data-view", "focus-documents"),
         @`@template.examples.adminDashboard.components.dataTable.emptyPanel()`,
-        Map.of("class", "order-1 mt-6", "data-view", "focus-documents"))
+        Map.of( "class", "order-1 mt-6", "data-view", "focus-documents", "hx-get", "/examples/admin-dashboard/outlines",
+          "hx-trigger", "change", "hx-include", "#rows-per-page input", "hx-vals", pageSizeValues,
+          "hx-target", "#outline-results", "hx-swap", "outerHTML" ) )
     ),
     tablistAttrs = Map.of("class", "dashboard-tab-list hidden lg:flex")
   )

@@ -5,10 +5,8 @@
     items = viewItems,
     mainAttrs = Map.of("class", "w-fit lg:hidden"),
     triggerAttrs = Map.of(
-      "class",
-      "w-48",
-      "aria-labelledby",
-      "view-selector-label view-selector-trigger"
+      "class", "w-48",
+      "aria-labelledby", "view-selector-label view-selector-trigger"
     )
   )
 
@@ -47,7 +45,16 @@
         null,
         Map.of("data-view", "focus-documents"),
         @`@template.examples.adminDashboard.components.dataTable.emptyPanel()`,
-        Map.of("class", "order-1 mt-6", "data-view", "focus-documents")
+        Map.of(
+          "class", "order-1 mt-6",
+          "data-view", "focus-documents",
+          "hx-get", "/examples/admin-dashboard/outlines",
+          "hx-trigger", "change",
+          "hx-include", "#rows-per-page input",
+          "hx-vals", pageSizeValues,
+          "hx-target", "#outline-results",
+          "hx-swap", "outerHTML"
+        )
       )
     ),
     tablistAttrs = Map.of("class", "dashboard-tab-list hidden lg:flex")

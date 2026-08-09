@@ -11,6 +11,7 @@ import {
 
 const NOT_FOUND = -1;
 const TEMPLATE_PLACEHOLDER_LABEL = Symbol("jte-template-placeholder");
+const MAP_OF_PATTERN = /(?:^|[^A-Za-z0-9_.$])Map\.of\s*$/;
 
 export const getVisitorKeys = (
   ast: Node | { [id: string]: Node },
@@ -189,6 +190,9 @@ const printTemplateArgument = (
         ")",
       );
     } else {
+      const printedArgs = args.map((arg) =>
+        printTemplateArgument(path, node, arg, printChild),
+      );
       result.push(
         builders.group([
           "(",
@@ -196,9 +200,9 @@ const printTemplateArgument = (
             builders.softline,
             builders.join(
               [",", builders.line],
-              args.map((arg) =>
-                printTemplateArgument(path, node, arg, printChild),
-              ),
+              MAP_OF_PATTERN.test(value.slice(start, i))
+                ? pairUp(printedArgs)
+                : printedArgs,
             ),
           ]),
           builders.softline,
@@ -218,6 +222,16 @@ const printTemplateArgument = (
   }
 
   return result;
+};
+
+const pairUp = (items: builders.Doc[]): builders.Doc[] => {
+  const pairs: builders.Doc[] = [];
+  for (let i = 0; i < items.length; i += 2) {
+    pairs.push(
+      i + 1 < items.length ? [items[i], ", ", items[i + 1]] : items[i],
+    );
+  }
+  return pairs;
 };
 
 const findClosingDelimiter = (
