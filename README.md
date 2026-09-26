@@ -1,6 +1,6 @@
 # prettier-plugin-jte
 
-[![CI](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yml/badge.svg)](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yml)
+[![CI](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yaml/badge.svg)](https://github.com/sgruendel/prettier-plugin-jte/actions/workflows/ci.yaml)
 [![Depfu](https://badges.depfu.com/badges/2d4a10b6819e6ab830a395d236f28051/overview.svg)](https://depfu.com/github/sgruendel/prettier-plugin-jte?project_id=70595)
 [![npm version](https://img.shields.io/npm/v/prettier-plugin-jte.svg)](https://www.npmjs.com/package/prettier-plugin-jte)
 
