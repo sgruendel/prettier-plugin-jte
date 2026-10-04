@@ -1,6 +1,7 @@
 export const Placeholder = {
-  startToken: "#~",
-  endToken: "~#",
+  // A leading # would turn &${...} into an HTML character reference (&#...).
+  startToken: "~#",
+  endToken: "#~",
 };
 
 interface BaseNode {
