@@ -118,6 +118,10 @@ const printTemplateDirective = (
   node: DirectiveNode,
   printChild?: (path: AstPath<Node>) => builders.Doc,
 ): builders.Doc => {
+  if (node.context === "attribute-value") {
+    return node.originalText;
+  }
+
   const match = node.content.match(
     /^(template(?:\.[A-Za-z0-9_]+)+)\(([\s\S]*)\)$/,
   );
@@ -415,6 +419,12 @@ export const embed: Printer<Node>["embed"] = () => {
     const node = path.getNode();
     if (!node || !["root", "block", "content"].includes(node.type)) {
       return undefined;
+    }
+
+    if (node.context) {
+      // Attribute fragments are not HTML documents. Preserve their whitespace
+      // and keep quoted values atomic rather than introducing layout breaks.
+      return node.originalText;
     }
 
     const header = node.type === "root"
@@ -885,7 +895,11 @@ const endsWithTemplatePlaceholder = (
 
 const isTemplatePlaceholder = (node: Node, placeholder: string): boolean => {
   const child = node.nodes[placeholder];
-  return child?.type === "directive" && child.keyword === "template";
+  return (
+    child?.type === "directive" &&
+    child.keyword === "template" &&
+    !child.context
+  );
 };
 
 const embedContent = (

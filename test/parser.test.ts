@@ -1,6 +1,25 @@
 import { expect, test } from "vitest";
 import { parse, PrettierParseError } from "../src/parser";
 import { ParserOptions } from "prettier";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parsers } from "../src/index";
+
+test.each([
+  "nested_node_locations",
+  "attribute_conditionals",
+  "raw_text_self_closing_whitespace",
+])("keeps original source locations in %s", async (name) => {
+  for (const file of ["input.jte", "expected.jte"]) {
+    const source = readFileSync(join(__dirname, "cases", name, file), "utf8");
+    const root = await parse(source, {} as ParserOptions);
+    for (const node of [root, ...Object.values(root.nodes)]) {
+      expect(
+        source.slice(parsers.jte.locStart(node), parsers.jte.locEnd(node)),
+      ).toEqual(node.originalText);
+    }
+  }
+});
 
 test.each(["script", "style"])(
   "parses JTE attributes on %s elements without parsing their body",
