@@ -653,53 +653,130 @@ const scanBalanced = (
   openChar: string,
   closeChar: string,
 ): number | null => {
+  const source = createJavaSource(text, openIndex);
   let depth = 0;
-  let i = openIndex;
 
-  while (i < text.length) {
-    const char = text[i];
+  while (source.peek()) {
+    const char = source.peek();
 
-    const commentEnd = skipJavaComment(text, i);
-    if (commentEnd !== null) {
-      i = commentEnd;
+    if (source.peek(2) === "//") {
+      source.advance(2);
+      while (source.peek() && !/[\r\n]/u.test(source.peek())) {
+        source.advance();
+      }
       continue;
     }
 
-    if (text.startsWith("@`", i)) {
-      const end = findClosingBacktick(text, i + 2);
-      if (end === null) {
+    if (source.peek(2) === "/*") {
+      source.advance(2);
+      while (source.peek() && source.peek(2) !== "*/") {
+        source.advance();
+      }
+      if (!source.peek()) {
         return null;
       }
-      i = end + 1;
+      source.advance(2);
       continue;
     }
 
     if (char === '"' || char === "'") {
-      i = skipQuoted(text, i);
-      if (i >= text.length) {
+      const quote = source.peek(3) === '"""' ? '"""' : char;
+      source.advance(quote.length);
+      while (source.peek() && source.peek(quote.length) !== quote) {
+        if (source.peek() === "\\") {
+          source.advance();
+        }
+        source.advance();
+      }
+      if (!source.peek()) {
         return null;
       }
+      source.advance(quote.length);
+      continue;
     }
 
+    // Content is JTE source: only raw backticks delimit it, even when its HTML
+    // contains text that looks like a Java Unicode escape.
+    if (text.startsWith("@`", source.position)) {
+      const end = findClosingBacktick(text, source.position + 2);
+      if (end === null) {
+        return null;
+      }
+      while (source.position <= end) {
+        source.advance();
+      }
+      continue;
+    }
+
+    source.advance();
     if (char === openChar) {
       depth++;
     } else if (char === closeChar) {
       depth--;
       if (depth === 0) {
-        return i + 1;
+        return source.position;
       }
     }
-
-    i++;
   }
 
   return null;
 };
 
+// Translate lazily for boundary detection only; returned positions always refer
+// to the raw source, so escapes remain unchanged in the AST and printed output.
+const createJavaSource = (text: string, start: number) => {
+  const pending: { value: string; end: number }[] = [];
+  let index = start;
+  let position = start;
+  let backslashes = 0;
+  let previousWasEscape = false;
+
+  const peek = (length = 1): string => {
+    while (pending.length < length && index < text.length) {
+      let value = text[index++];
+      // JLS 3.3: eligibility depends on the translated backslash run and
+      // whether the previous character was itself a Unicode escape.
+      const escape =
+        value === "\\" && (previousWasEscape || backslashes % 2 === 0)
+          ? text.slice(index).match(/^u+([0-9a-fA-F]{4})/u)
+          : null;
+      if (escape) {
+        value = String.fromCharCode(parseInt(escape[1], 16));
+        index += escape[0].length;
+      }
+      previousWasEscape = Boolean(escape);
+      backslashes = value === "\\" ? backslashes + 1 : 0;
+      pending.push({ value, end: index });
+    }
+    return pending
+      .slice(0, length)
+      .map((char) => char.value)
+      .join("");
+  };
+
+  const advance = (length = 1): void => {
+    for (let i = 0; i < length; i++) {
+      peek();
+      const char = pending.shift();
+      if (char) {
+        position = char.end;
+      }
+    }
+  };
+
+  return {
+    peek,
+    advance,
+    get position() {
+      return position;
+    },
+  };
+};
+
 const skipJavaComment = (text: string, index: number): number | null => {
   if (text.startsWith("//", index)) {
-    const end = text.indexOf("\n", index + 2);
-    return end === NOT_FOUND ? text.length : end;
+    const end = text.slice(index + 2).search(/[\r\n]/u);
+    return end === NOT_FOUND ? text.length : index + 2 + end;
   }
   if (text.startsWith("/*", index)) {
     const end = text.indexOf("*/", index + 2);
