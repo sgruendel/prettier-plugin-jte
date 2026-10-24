@@ -2,6 +2,28 @@ import { expect, test } from "vitest";
 import { parse, PrettierParseError } from "../src/parser";
 import { ParserOptions } from "prettier";
 
+test.each(["script", "style"])(
+  "parses JTE attributes on %s elements without parsing their body",
+  async (tag) => {
+    const expression = '${flag ? "a > b" : assetPath("/assets/example")}';
+    const body = "/* ${clientOnly} @if(clientOnly) */";
+    const root = await parse(
+      `<${tag} data-note="a > b" data-src="${expression}">${body}</${tag}>`,
+      {} as ParserOptions,
+    );
+    const nodes = Object.values(root.nodes);
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      type: "expression",
+      originalText: expression,
+    });
+    expect(root.content).toEqual(
+      `<${tag} data-note="a > b" data-src="${nodes[0].id}">${body}</${tag}>`,
+    );
+  },
+);
+
 test.each([
   ["code", "!{var x=1; // see <b> tag}"],
   ["code", "!{var x=1; /* see <b> tag}"],

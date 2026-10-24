@@ -88,7 +88,16 @@ const parseFragment = (
 
     const scriptOrStyleBlock = matchScriptOrStyleBlock(content, i);
     if (scriptOrStyleBlock) {
-      i += scriptOrStyleBlock.length;
+      const { raw, prefix, attributes, body } = scriptOrStyleBlock;
+      // Parse opening-tag attributes while keeping the raw text body opaque.
+      const parsed =
+        prefix +
+        parseFragment(attributes, nodes, generatePlaceholder) +
+        body;
+      if (parsed !== raw) {
+        content = replaceAt(content, parsed, i, raw.length);
+      }
+      i += parsed.length;
       anchor = i;
       continue;
     }
@@ -310,23 +319,53 @@ const matchIgnoreBlock = (text: string, index: number): string | null => {
 const matchScriptOrStyleBlock = (
   text: string,
   index: number,
-): string | null => {
-  const lower = text.slice(index).toLowerCase();
-  const tag = lower.startsWith("<script")
-    ? "script"
-    : lower.startsWith("<style")
-      ? "style"
-      : null;
-  if (!tag) {
+): { raw: string; prefix: string; attributes: string; body: string } | null => {
+  const match = text
+    .slice(index, index + 8)
+    .match(/^<(script|style)(?=[\s>/])/iu);
+  if (!match) {
     return null;
   }
 
-  const endIndex = lower.indexOf(`</${tag}>`);
-  if (endIndex === NOT_FOUND) {
-    return text.slice(index);
+  const attributesStart = index + match[0].length;
+  let quote: string | null = null;
+  for (let i = attributesStart; i < text.length; i++) {
+    const embedded =
+      matchExpression(text, i) ??
+      (text[i] === "@"
+        ? (matchParenDirective(text, i, "if") ??
+          matchParenDirective(text, i, "elseif") ??
+          matchParenDirective(text, i, "for"))
+        : null);
+    if (embedded) {
+      i += embedded.raw.length - 1;
+      continue;
+    }
+    if (quote) {
+      if (text[i] === quote) {
+        quote = null;
+      }
+    } else if (text[i] === '"' || text[i] === "'") {
+      quote = text[i];
+    } else if (text[i] === ">") {
+      const closing = new RegExp(`</${match[1]}>`, "giu");
+      closing.lastIndex = i + 1;
+      const end =
+        text[i - 1] === "/"
+          ? i + 1
+          : closing.exec(text)
+            ? closing.lastIndex
+            : text.length;
+      return {
+        raw: text.slice(index, end),
+        prefix: match[0],
+        attributes: text.slice(attributesStart, i + 1),
+        body: text.slice(i + 1, end),
+      };
+    }
   }
 
-  return text.slice(index, index + endIndex + tag.length + 3);
+  return null;
 };
 
 const matchHtmlComment = (text: string, index: number): string | null => {
