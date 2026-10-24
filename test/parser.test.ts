@@ -8,6 +8,7 @@ import { parsers } from "../src/index";
 test.each([
   "nested_node_locations",
   "attribute_conditionals",
+  "attribute_unquoted_quotes",
   "raw_text_self_closing_whitespace",
 ])("keeps original source locations in %s", async (name) => {
   for (const file of ["input.jte", "expected.jte"]) {

@@ -67,6 +67,7 @@ type TagState = {
     "between" | "name" | "after-name" | "before-value" | "quoted" | "unquoted";
   quote?: string;
   selfClosingSlash?: number;
+  unquotedValue?: { parts: string[]; quoteIndex: number };
 };
 const OPEN_TAG = /<([a-z][\w:.-]*)(?=[\s/>])/iy;
 const RAW_CLOSE = {
@@ -94,6 +95,22 @@ const parseFragment = (
     if (end > textStart) currentParts().push(text.slice(textStart, end));
     textStart = end;
   };
+  const startUnquotedValue = (state: TagState) => {
+    flush(i);
+    const output = currentParts();
+    state.unquotedValue = { parts: output, quoteIndex: output.length };
+    // Reserve an opening quote, filling it only if this value needs quoting.
+    output.push("");
+    state.value = "unquoted";
+  };
+  const endUnquotedValue = (state: TagState) => {
+    const value = state.unquotedValue;
+    if (value && value.parts[value.quoteIndex]) {
+      flush(i);
+      currentParts().push('"');
+    }
+    state.unquotedValue = undefined;
+  };
 
   while (i < text.length) {
     if (!tag && text[i] === "<") {
@@ -108,6 +125,13 @@ const parseFragment = (
 
     const matched = matchJte(text, i, nodes, generatePlaceholder, sourceOffset);
     if (matched) {
+      if (
+        tag?.value === "before-value" &&
+        matched.type !== "comment" &&
+        matched.type !== "ignore"
+      ) {
+        startUnquotedValue(tag);
+      }
       flush(i);
       const id = generatePlaceholder();
       const context: AttributeContext | undefined = tag
@@ -175,13 +199,6 @@ const parseFragment = (
         currentParts().push(id);
       }
 
-      if (
-        tag?.value === "before-value" &&
-        matched.type !== "comment" &&
-        matched.type !== "ignore"
-      ) {
-        tag.value = "unquoted";
-      }
       if (tag) tag.selfClosingSlash = undefined;
       i = end;
       textStart = end;
@@ -197,10 +214,16 @@ const parseFragment = (
     }
 
     if (tag) {
+      // Whitespace inside a JTE block does not end the surrounding value.
+      if (tag.unquotedValue && tag.unquotedValue.parts !== currentParts()) {
+        i++;
+        continue;
+      }
       const char = text[i];
       if (tag.value === "quoted") {
         if (char === tag.quote) tag.value = "between";
       } else if (char === ">") {
+        endUnquotedValue(tag);
         const slash = tag.selfClosingSlash;
         const selfClosing = slash !== undefined;
         if (slash !== undefined && slash < i - 1) {
@@ -233,22 +256,27 @@ const parseFragment = (
               : undefined;
         }
         if (/\s/u.test(char)) {
-          if (tag.value === "unquoted") tag.value = "between";
-          else if (tag.value === "name") tag.value = "after-name";
+          if (tag.value === "unquoted") {
+            endUnquotedValue(tag);
+            tag.value = "between";
+          } else if (tag.value === "name") tag.value = "after-name";
         } else if (tag.value === "before-value") {
           if (char === '"' || char === "'") {
             tag.value = "quoted";
             tag.quote = char;
           } else {
-            tag.value = "unquoted";
+            startUnquotedValue(tag);
           }
         } else if (tag.value === "unquoted") {
           if (char === "'" || char === '"') {
-            // Preserve the value of tolerated HTML quote characters in an
-            // unquoted attribute while making it acceptable to the HTML parser.
-            flush(i);
-            currentParts().push(char === "'" ? "&#39;" : "&quot;");
-            textStart = i + 1;
+            // Quote the whole value so literal apostrophes stay literal.
+            const value = tag.unquotedValue!;
+            value.parts[value.quoteIndex] = '"';
+            if (char === '"') {
+              flush(i);
+              currentParts().push("&quot;");
+              textStart = i + 1;
+            }
           }
         } else if (char === "=") {
           tag.value = "before-value";
