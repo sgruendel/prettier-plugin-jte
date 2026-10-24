@@ -1,5 +1,6 @@
 import { AstPath, Doc, Options, Printer } from "prettier";
 import { builders, utils } from "prettier/doc";
+import { type Ast, parseHtml } from "angular-html-parser";
 import {
   BlockNode,
   CodeNode,
@@ -402,7 +403,8 @@ export const embed: Printer<Node>["embed"] = () => {
     const header = node.type === "root" ? formatHeader(node) : undefined;
     const mapped = await Promise.all(
       splitAtElse(node, header?.content).map(async (content) => {
-        const imports = formatImports(node, content);
+        const ignored = findIgnoredPlaceholders(content);
+        const imports = formatImports(node, content, ignored);
         let doc;
         if (content in node.nodes) {
           doc = content;
@@ -413,23 +415,15 @@ export const embed: Printer<Node>["embed"] = () => {
           });
         }
 
-        let ignoreDoc = false;
-
         return utils.mapDoc(doc, (currentDoc) => {
           if (typeof currentDoc !== "string") {
             return separateAfterTemplateCalls(currentDoc);
-          }
-
-          if (currentDoc === "<!-- prettier-ignore -->") {
-            ignoreDoc = true;
-            return currentDoc;
           }
 
           const idxs = findPlaceholders(currentDoc).filter(
             ([start, end]) => currentDoc.slice(start, end + 1) in node.nodes,
           );
           if (!idxs.length) {
-            ignoreDoc = false;
             return currentDoc;
           }
 
@@ -440,8 +434,8 @@ export const embed: Printer<Node>["embed"] = () => {
             if (lastEnd < start) {
               const between = currentDoc.slice(lastEnd, start);
               res.push(
-                !ignoreDoc &&
-                  previousPlaceholder &&
+                previousPlaceholder &&
+                  !ignored.has(previousPlaceholder) &&
                   /^\s+$/u.test(between) &&
                   isTemplatePlaceholder(node, previousPlaceholder)
                   ? builders.hardline
@@ -450,7 +444,7 @@ export const embed: Printer<Node>["embed"] = () => {
             }
 
             const placeholder = currentDoc.slice(start, end + 1);
-            if (ignoreDoc) {
+            if (ignored.has(placeholder)) {
               res.push(node.nodes[placeholder].originalText);
             } else {
               const child = node.nodes[placeholder];
@@ -483,8 +477,8 @@ export const embed: Printer<Node>["embed"] = () => {
           if (lastEnd > 0 && currentDoc.length > lastEnd) {
             const trailing = currentDoc.slice(lastEnd);
             if (
-              !ignoreDoc &&
               previousPlaceholder &&
+              !ignored.has(previousPlaceholder) &&
               isTemplatePlaceholder(node, previousPlaceholder)
             ) {
               res.push(builders.hardline, trailing.trimStart());
@@ -493,7 +487,6 @@ export const embed: Printer<Node>["embed"] = () => {
             }
           }
 
-          ignoreDoc = false;
           return res;
         });
       }),
@@ -639,13 +632,52 @@ const readHeaderComments = (text: string): string[] | undefined => {
   return comments;
 };
 
+const findIgnoredPlaceholders = (content: string): Set<string> => {
+  const ignored = new Set<string>();
+  if (!content.includes("prettier-ignore")) {
+    return ignored;
+  }
+
+  // Determine ignore scope before import collapsing or HTML document splitting.
+  const { rootNodes } = parseHtml(content, {
+    canSelfClose: true,
+    allowHtmComponentClosingTags: true,
+  });
+  const visit = (nodes: Ast.Node[]): void => {
+    let ignoreNext = false;
+    for (const node of nodes) {
+      if (node.kind === "comment" && node.value?.trim() === "prettier-ignore") {
+        ignoreNext = true;
+      } else if (node.kind === "text" && !node.value.trim()) {
+        continue;
+      } else if (ignoreNext) {
+        const original = content.slice(
+          node.sourceSpan.start.offset,
+          node.sourceSpan.end.offset,
+        );
+        for (const [start, end] of findPlaceholders(original)) {
+          ignored.add(original.slice(start, end + 1));
+        }
+        ignoreNext = false;
+      } else if ("children" in node) {
+        visit(node.children);
+      }
+    }
+  };
+  visit(rootNodes);
+  return ignored;
+};
+
 const formatImports = (
   node: Node,
   content: string,
+  ignored: ReadonlySet<string>,
 ): { content: string; docs: Map<string, builders.Doc> } => {
   const imports = findPlaceholders(content).flatMap(([start, end]) => {
     const child = node.nodes[content.slice(start, end + 1)];
-    return child?.type === "directive" && child.keyword === "import"
+    return child?.type === "directive" &&
+      child.keyword === "import" &&
+      !ignored.has(child.id)
       ? [{ node: child, start, end }]
       : [];
   });
@@ -664,10 +696,6 @@ const formatImports = (
       const next = imports[++i];
       run.push(next.node);
       end = next.end + 1;
-    }
-
-    if (/<!--\s*prettier-ignore\s*-->\s*$/u.test(content.slice(0, first.start))) {
-      continue;
     }
 
     const printed = printImports(run);
