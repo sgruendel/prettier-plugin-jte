@@ -4,8 +4,8 @@
     var text="""
         @`<b class = 'raw'>=</b>`
         """;
-    // @` ignored }
-    /* @` ignored } */
+    // a=b
+    /* a=b */
     final var first=@`
 <div data-kind = "first">
 @if(enabled)

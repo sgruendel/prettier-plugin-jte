@@ -373,7 +373,7 @@ const matchExpression = (
   }
 
   const openIndex = index + prefix.length - 1;
-  const end = scanBalanced(text, openIndex, "{", "}");
+  const end = scanBalanced(text, openIndex);
   if (end === null) {
     return null;
   }
@@ -395,7 +395,7 @@ const matchCodeBlock = (
     return null;
   }
 
-  const end = scanBalanced(text, index + 1, "{", "}");
+  const end = scanBalanced(text, index + 1);
   if (end === null) {
     return null;
   }
@@ -514,7 +514,7 @@ const matchParenDirective = (
     return null;
   }
 
-  const end = scanBalanced(text, current, "(", ")");
+  const end = scanBalanced(text, current);
   if (end === null) {
     return null;
   }
@@ -567,7 +567,7 @@ const matchTemplateDirective = (
     return null;
   }
 
-  const end = scanBalanced(text, current, "(", ")");
+  const end = scanBalanced(text, current);
   if (end === null) {
     return null;
   }
@@ -591,23 +591,12 @@ const parseInlineContentBlocks = (
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
 ): string => {
-  // Java translates Unicode escapes before recognizing literals and comments.
-  // Preserve the text when raw delimiters cannot reliably identify content.
-  if (/\\u+[0-9a-f]{4}/iu.test(text)) {
-    return text;
-  }
-
   let content = text;
   let i = 0;
 
   while (i < content.length) {
-    if (content[i] === '"' || content[i] === "'") {
+    if (content[i] === '"') {
       i = skipQuoted(content, i) + 1;
-      continue;
-    }
-    const commentEnd = skipJavaComment(content, i);
-    if (commentEnd !== null) {
-      i = commentEnd;
       continue;
     }
 
@@ -643,160 +632,50 @@ const getPreNewLines = (text: string): number => {
 };
 
 const findClosingBacktick = (text: string, index: number): number | null => {
-  const endIndex = text.indexOf("`", index);
-  return endIndex === NOT_FOUND ? null : endIndex;
+  let depth = 1;
+  for (let i = index; i < text.length; i++) {
+    if (text.startsWith("@`", i)) {
+      depth++;
+      i++;
+    } else if (text[i] === "`" && --depth === 0) {
+      return i;
+    }
+  }
+  return null;
 };
 
 const scanBalanced = (
   text: string,
   openIndex: number,
-  openChar: string,
-  closeChar: string,
 ): number | null => {
-  const source = createJavaSource(text, openIndex);
-  let depth = 0;
-
-  while (source.peek()) {
-    const char = source.peek();
-
-    if (source.peek(2) === "//") {
-      source.advance(2);
-      while (source.peek() && !/[\r\n]/u.test(source.peek())) {
-        source.advance();
-      }
-      continue;
-    }
-
-    if (source.peek(2) === "/*") {
-      source.advance(2);
-      while (source.peek() && source.peek(2) !== "*/") {
-        source.advance();
-      }
-      if (!source.peek()) {
-        return null;
-      }
-      source.advance(2);
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      const quote = source.peek(3) === '"""' ? '"""' : char;
-      source.advance(quote.length);
-      while (source.peek() && source.peek(quote.length) !== quote) {
-        if (source.peek() === "\\") {
-          source.advance();
-        }
-        source.advance();
-      }
-      if (!source.peek()) {
-        return null;
-      }
-      source.advance(quote.length);
-      continue;
-    }
-
-    // Content is JTE source: only raw backticks delimit it, even when its HTML
-    // contains text that looks like a Java Unicode escape.
-    if (text.startsWith("@`", source.position)) {
-      const end = findClosingBacktick(text, source.position + 2);
+  // Match JTE's TemplateParser: strings and content use raw delimiters;
+  // Java comments and Unicode escapes do not alter template boundaries.
+  const closing = [text[openIndex] === "(" ? ")" : "}"];
+  for (let i = openIndex + 1; i < text.length; i++) {
+    const char = text[i];
+    if (char === '"') {
+      i = skipQuoted(text, i);
+    } else if (text.startsWith("@`", i)) {
+      const end = findClosingBacktick(text, i + 2);
       if (end === null) {
         return null;
       }
-      while (source.position <= end) {
-        source.advance();
+      i = end;
+    } else if (char === "(" || char === "{") {
+      closing.push(char === "(" ? ")" : "}");
+    } else if (char === ")" || char === "}") {
+      if (closing.pop() !== char) {
+        return null;
       }
-      continue;
-    }
-
-    source.advance();
-    if (char === openChar) {
-      depth++;
-    } else if (char === closeChar) {
-      depth--;
-      if (depth === 0) {
-        return source.position;
+      if (!closing.length) {
+        return i + 1;
       }
     }
-  }
-
-  return null;
-};
-
-// Translate lazily for boundary detection only; returned positions always refer
-// to the raw source, so escapes remain unchanged in the AST and printed output.
-const createJavaSource = (text: string, start: number) => {
-  const pending: { value: string; end: number }[] = [];
-  let index = start;
-  let position = start;
-  let backslashes = 0;
-  let previousWasEscape = false;
-
-  const peek = (length = 1): string => {
-    while (pending.length < length && index < text.length) {
-      let value = text[index++];
-      // JLS 3.3: eligibility depends on the translated backslash run and
-      // whether the previous character was itself a Unicode escape.
-      const escape =
-        value === "\\" && (previousWasEscape || backslashes % 2 === 0)
-          ? text.slice(index).match(/^u+([0-9a-fA-F]{4})/u)
-          : null;
-      if (escape) {
-        value = String.fromCharCode(parseInt(escape[1], 16));
-        index += escape[0].length;
-      }
-      previousWasEscape = Boolean(escape);
-      backslashes = value === "\\" ? backslashes + 1 : 0;
-      pending.push({ value, end: index });
-    }
-    return pending
-      .slice(0, length)
-      .map((char) => char.value)
-      .join("");
-  };
-
-  const advance = (length = 1): void => {
-    for (let i = 0; i < length; i++) {
-      peek();
-      const char = pending.shift();
-      if (char) {
-        position = char.end;
-      }
-    }
-  };
-
-  return {
-    peek,
-    advance,
-    get position() {
-      return position;
-    },
-  };
-};
-
-const skipJavaComment = (text: string, index: number): number | null => {
-  if (text.startsWith("//", index)) {
-    const end = text.slice(index + 2).search(/[\r\n]/u);
-    return end === NOT_FOUND ? text.length : index + 2 + end;
-  }
-  if (text.startsWith("/*", index)) {
-    const end = text.indexOf("*/", index + 2);
-    return end === NOT_FOUND ? text.length : end + 2;
   }
   return null;
 };
 
 const skipQuoted = (text: string, index: number): number => {
-  if (text.startsWith('"""', index)) {
-    let i = index + 3;
-    while (i < text.length) {
-      if (text.startsWith('"""', i) && !isEscaped(text, i)) {
-        return i + 2;
-      }
-      i++;
-    }
-    return text.length;
-  }
-
   const quote = text[index];
   let i = index + 1;
   while (i < text.length) {
@@ -810,14 +689,6 @@ const skipQuoted = (text: string, index: number): number => {
     i++;
   }
   return text.length;
-};
-
-const isEscaped = (text: string, index: number): boolean => {
-  let backslashes = 0;
-  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
-    backslashes++;
-  }
-  return backslashes % 2 === 1;
 };
 
 const placeholderGenerator = (text: string) => {
