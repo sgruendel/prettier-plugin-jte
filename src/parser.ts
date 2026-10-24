@@ -4,13 +4,11 @@ import {
   ContentNode,
   DirectiveKeyword,
   DirectiveNode,
-  ExpressionNode,
-  IgnoreNode,
   Node,
   Placeholder,
   RootNode,
 } from "./jte";
-import {parseHtml} from "angular-html-parser";
+import { parseHtml } from "angular-html-parser";
 
 const NOT_FOUND = -1;
 const IGNORE_START = /^<!--\s*prettier-ignore-start\s*-->/;
@@ -24,7 +22,7 @@ export const parse: Parser<Node>["parse"] = (text) => {
     preNewLines: 0,
     originalText: text,
     index: 0,
-    length: 0,
+    length: text.length,
     nodes: {},
   };
 
@@ -39,246 +37,305 @@ export const parse: Parser<Node>["parse"] = (text) => {
 
   if (errors.length > 0) {
     const error = errors[0];
-    const { msg, span: { start, end } } = error;
+    const {
+      msg,
+      span: { start, end },
+    } = error;
     const startLine = start.line + 1;
     const startCol = start.col + 1;
 
-    throw new PrettierParseError(
-        `${msg} (${startLine}:${startCol})`,
-        {
-          start: {line: startLine, column: startCol},
-          end: {line: end.line + 1, column: end.col + 1},
-        }
-    );
+    throw new PrettierParseError(`${msg} (${startLine}:${startCol})`, {
+      start: { line: startLine, column: startCol },
+      end: { line: end.line + 1, column: end.col + 1 },
+    });
   }
   return root;
+};
+
+type AttributeContext = "attribute" | "attribute-value";
+type JteMatch = {
+  raw: string;
+  content: string;
+} & (
+  | { type: "expression"; unsafe: boolean }
+  | { type: "directive"; keyword: DirectiveKeyword }
+  | { type: "ignore" | "comment" | "code" | "content" }
+);
+type TagState = {
+  name: string;
+  value:
+    "between" | "name" | "after-name" | "before-value" | "quoted" | "unquoted";
+  quote?: string;
+  selfClosingSlash?: number;
+  unquotedValue?: { parts: string[]; quoteIndex: number };
+};
+const OPEN_TAG = /<([a-z][\w:.-]*)(?=[\s/>])/iy;
+const RAW_CLOSE = {
+  script: /<\/script\s*>/gi,
+  style: /<\/style\s*>/gi,
 };
 
 const parseFragment = (
   text: string,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): string => {
-  const directiveStack: DirectiveNode[] = [];
-  let content = text;
+  // Build placeholder output separately so every index remains an offset in
+  // the original source, including recursively parsed content blocks.
+  const parts: string[] = [];
+  const stack: { start: DirectiveNode; localIndex: number; parts: string[] }[] =
+    [];
+  const currentParts = () => stack.at(-1)?.parts ?? parts;
+  let tag: TagState | undefined;
   let i = 0;
+  let textStart = 0;
   let anchor = 0;
+  const flush = (end: number) => {
+    if (end > textStart) currentParts().push(text.slice(textStart, end));
+    textStart = end;
+  };
+  const startUnquotedValue = (state: TagState) => {
+    flush(i);
+    const output = currentParts();
+    state.unquotedValue = { parts: output, quoteIndex: output.length };
+    // Reserve an opening quote, filling it only if this value needs quoting.
+    output.push("");
+    state.value = "unquoted";
+  };
+  const endUnquotedValue = (state: TagState) => {
+    const value = state.unquotedValue;
+    if (value && value.parts[value.quoteIndex]) {
+      flush(i);
+      currentParts().push('"');
+    }
+    state.unquotedValue = undefined;
+  };
 
-  while (i < content.length) {
-    const preNewLines = getPreNewLines(content.slice(anchor, i));
+  while (i < text.length) {
+    if (!tag && text[i] === "<") {
+      OPEN_TAG.lastIndex = i;
+      const opening = OPEN_TAG.exec(text);
+      if (opening) {
+        tag = { name: opening[1].toLowerCase(), value: "between" };
+        i = OPEN_TAG.lastIndex;
+        continue;
+      }
+    }
 
-    const ignoreBlock = matchIgnoreBlock(content, i);
-    if (ignoreBlock) {
+    const matched = matchJte(text, i, nodes, generatePlaceholder, sourceOffset);
+    if (matched) {
+      if (
+        tag?.value === "before-value" &&
+        matched.type !== "comment" &&
+        matched.type !== "ignore"
+      ) {
+        startUnquotedValue(tag);
+      }
+      flush(i);
       const id = generatePlaceholder();
-      nodes[id] = {
+      const context: AttributeContext | undefined = tag
+        ? tag.value === "before-value" ||
+          tag.value === "quoted" ||
+          tag.value === "unquoted"
+          ? "attribute-value"
+          : "attribute"
+        : undefined;
+      const { raw, ...value } = matched;
+      const node: Node = {
+        ...value,
         id,
-        type: "ignore",
-        content: ignoreBlock,
-        preNewLines,
-        originalText: ignoreBlock,
-        index: i,
-        length: ignoreBlock.length,
+        ...(context ? { context } : {}),
+        preNewLines: getPreNewLines(text.slice(anchor, i)),
+        originalText: raw,
+        index: sourceOffset + i,
+        length: matched.raw.length,
         nodes,
-      } satisfies IgnoreNode;
-      content = replaceAt(content, id, i, ignoreBlock.length);
-      i += id.length;
-      anchor = i;
+      };
+      nodes[id] = node;
+      const end = i + matched.raw.length;
+
+      if (
+        node.type === "directive" &&
+        (node.keyword === "if" || node.keyword === "for")
+      ) {
+        stack.push({ start: node, localIndex: i, parts: [] });
+      } else if (
+        node.type === "directive" &&
+        (node.keyword === "endif" || node.keyword === "endfor")
+      ) {
+        const endKeyword = node.keyword;
+        while (
+          stack.length &&
+          !matchesBlockBoundary(stack.at(-1)!.start.keyword, endKeyword)
+        ) {
+          const unmatched = stack.pop()!;
+          currentParts().push(unmatched.start.id, unmatched.parts.join(""));
+        }
+        const opening = stack.pop();
+        if (!opening) {
+          throw new Error(
+            `No opening statement found for closing statement "@${endKeyword}".`,
+          );
+        }
+        const blockId = generatePlaceholder();
+        const originalText = text.slice(opening.localIndex, end);
+        nodes[blockId] = {
+          id: blockId,
+          type: "block",
+          start: opening.start,
+          end: node,
+          content: opening.parts.join(""),
+          preNewLines: opening.start.preNewLines,
+          containsNewLines: originalText.includes("\n"),
+          originalText,
+          index: opening.start.index,
+          length: originalText.length,
+          ...(opening.start.context ? { context: opening.start.context } : {}),
+          nodes,
+        } satisfies BlockNode;
+        currentParts().push(blockId);
+      } else {
+        currentParts().push(id);
+      }
+
+      if (tag) tag.selfClosingSlash = undefined;
+      i = end;
+      textStart = end;
+      anchor = end;
       continue;
     }
 
-    const scriptOrStyleBlock = matchScriptOrStyleBlock(content, i);
-    if (scriptOrStyleBlock) {
-      i += scriptOrStyleBlock.length;
-      anchor = i;
-      continue;
-    }
-
-    const htmlComment = matchHtmlComment(content, i);
+    const htmlComment = matchHtmlComment(text, i);
     if (htmlComment) {
       i += htmlComment.length;
       anchor = i;
       continue;
     }
 
-    const comment = matchComment(content, i);
-    if (comment) {
-      const id = generatePlaceholder();
-      nodes[id] = {
-        id,
-        type: "comment",
-        content: comment,
-        preNewLines,
-        originalText: comment,
-        index: i,
-        length: comment.length,
-        nodes,
-      };
-      content = replaceAt(content, id, i, comment.length);
-      i += id.length;
-      anchor = i;
-      continue;
-    }
-
-    const expression = matchExpression(content, i);
-    if (expression) {
-      const id = generatePlaceholder();
-      nodes[id] = {
-        id,
-        type: "expression",
-        unsafe: expression.unsafe,
-        content: expression.content,
-        preNewLines,
-        originalText: expression.raw,
-        index: i,
-        length: expression.raw.length,
-        nodes,
-      } satisfies ExpressionNode;
-      content = replaceAt(content, id, i, expression.raw.length);
-      i += id.length;
-      anchor = i;
-      continue;
-    }
-
-    const code = matchCodeBlock(content, i, nodes, generatePlaceholder);
-    if (code) {
-      const id = generatePlaceholder();
-      nodes[id] = {
-        id,
-        type: "code",
-        content: code.content,
-        preNewLines,
-        originalText: code.raw,
-        index: i,
-        length: code.raw.length,
-        nodes,
-      };
-      content = replaceAt(content, id, i, code.raw.length);
-      i += id.length;
-      anchor = i;
-      continue;
-    }
-
-    const contentBlock = matchContentBlock(
-      content,
-      i,
-      nodes,
-      generatePlaceholder,
-    );
-    if (contentBlock) {
-      const id = generatePlaceholder();
-      nodes[id] = {
-        id,
-        type: "content",
-        content: contentBlock.content,
-        preNewLines,
-        originalText: contentBlock.raw,
-        index: i,
-        length: contentBlock.raw.length,
-        nodes,
-      } satisfies ContentNode;
-      content = replaceAt(content, id, i, contentBlock.raw.length);
-      i += id.length;
-      anchor = i;
-      continue;
-    }
-
-    const directive = matchDirective(content, i, nodes, generatePlaceholder);
-    if (directive) {
-      const id = generatePlaceholder();
-      const node: DirectiveNode = {
-        id,
-        type: "directive",
-        keyword: directive.keyword,
-        content: directive.content,
-        preNewLines,
-        originalText: directive.raw,
-        index: i,
-        length: directive.raw.length,
-        nodes,
-      };
-
-      if (directive.keyword === "if" || directive.keyword === "for") {
-        nodes[id] = node;
-        directiveStack.push(node);
-        i += directive.raw.length;
-        anchor = i;
+    if (tag) {
+      // Whitespace inside a JTE block does not end the surrounding value.
+      if (tag.unquotedValue && tag.unquotedValue.parts !== currentParts()) {
+        i++;
         continue;
       }
-
-      if (directive.keyword === "endif" || directive.keyword === "endfor") {
-        const start = popMatchingDirective(
-          directiveStack,
-          directive.keyword,
-          content,
-        );
-        nodes[id] = node;
-
-        const originalText = content.slice(
-          start.index,
-          i + directive.raw.length,
-        );
-        const blockId = generatePlaceholder();
-        nodes[blockId] = {
-          id: blockId,
-          type: "block",
-          start,
-          end: node,
-          content: originalText.slice(
-            start.length,
-            originalText.length - directive.raw.length,
-          ),
-          preNewLines: start.preNewLines,
-          containsNewLines: originalText.includes("\n"),
-          originalText,
-          index: start.index,
-          length: originalText.length,
-          nodes,
-        } satisfies BlockNode;
-
-        content = replaceAt(content, blockId, start.index, originalText.length);
-        i = start.index + blockId.length;
-        anchor = i;
+      const char = text[i];
+      if (tag.value === "quoted") {
+        if (char === tag.quote) tag.value = "between";
+      } else if (char === ">") {
+        endUnquotedValue(tag);
+        const slash = tag.selfClosingSlash;
+        const selfClosing = slash !== undefined;
+        if (slash !== undefined && slash < i - 1) {
+          flush(slash + 1);
+          textStart = i;
+        }
+        const closing =
+          tag.name === "script"
+            ? RAW_CLOSE.script
+            : tag.name === "style"
+              ? RAW_CLOSE.style
+              : undefined;
+        tag = undefined;
+        i++;
+        if (closing && !selfClosing) {
+          closing.lastIndex = i;
+          const end = closing.exec(text);
+          i = end ? closing.lastIndex : text.length;
+          anchor = i;
+        }
         continue;
+      } else {
+        if (!/\s/u.test(char)) {
+          tag.selfClosingSlash =
+            char === "/" &&
+            (tag.value === "between" ||
+              tag.value === "name" ||
+              tag.value === "after-name")
+              ? i
+              : undefined;
+        }
+        if (/\s/u.test(char)) {
+          if (tag.value === "unquoted") {
+            endUnquotedValue(tag);
+            tag.value = "between";
+          } else if (tag.value === "name") tag.value = "after-name";
+        } else if (tag.value === "before-value") {
+          if (char === '"' || char === "'") {
+            tag.value = "quoted";
+            tag.quote = char;
+          } else {
+            startUnquotedValue(tag);
+          }
+        } else if (tag.value === "unquoted") {
+          if (char === "'" || char === '"') {
+            // Quote the whole value so literal apostrophes stay literal.
+            const value = tag.unquotedValue!;
+            value.parts[value.quoteIndex] = '"';
+            if (char === '"') {
+              flush(i);
+              currentParts().push("&quot;");
+              textStart = i + 1;
+            }
+          }
+        } else if (char === "=") {
+          tag.value = "before-value";
+        } else if (char !== "/") {
+          tag.value = "name";
+        }
       }
-
-      nodes[id] = node;
-      content = replaceAt(content, id, i, directive.raw.length);
-      i += id.length;
-      anchor = i;
-      continue;
     }
-
     i++;
   }
 
-  for (const directive of directiveStack) {
-    content = content.replace(directive.originalText, directive.id);
+  flush(text.length);
+  while (stack.length) {
+    const unmatched = stack.pop()!;
+    currentParts().push(unmatched.start.id, unmatched.parts.join(""));
   }
-
-  return content;
+  return parts.join("");
 };
 
-const popMatchingDirective = (
-  stack: DirectiveNode[],
-  endKeyword: "endif" | "endfor",
-  content: string,
-): DirectiveNode => {
-  while (true) {
-    const start = stack.pop();
-    if (!start) {
-      throw new Error(
-        `No opening statement found for closing statement "@${endKeyword}".`,
-      );
-    }
-
-    if (matchesBlockBoundary(start.keyword, endKeyword)) {
-      return start;
-    }
-
-    content = replaceAt(content, start.id, start.index, start.length);
-  }
+const matchJte = (
+  text: string,
+  index: number,
+  nodes: { [id: string]: Node },
+  generatePlaceholder: () => string,
+  sourceOffset: number,
+): JteMatch | null => {
+  const char = text[index];
+  if (char !== "<" && char !== "$" && char !== "!" && char !== "@") return null;
+  const ignore = matchIgnoreBlock(text, index);
+  if (ignore) return { type: "ignore", raw: ignore, content: ignore };
+  const comment = matchComment(text, index);
+  if (comment) return { type: "comment", raw: comment, content: comment };
+  const expression = matchExpression(text, index);
+  if (expression) return { type: "expression", ...expression };
+  const code = matchCodeBlock(
+    text,
+    index,
+    nodes,
+    generatePlaceholder,
+    sourceOffset,
+  );
+  if (code) return { type: "code", ...code };
+  const content = matchContentBlock(
+    text,
+    index,
+    nodes,
+    generatePlaceholder,
+    sourceOffset,
+  );
+  if (content) return { type: "content", ...content };
+  const directive = matchDirective(
+    text,
+    index,
+    nodes,
+    generatePlaceholder,
+    sourceOffset,
+  );
+  return directive ? { type: "directive", ...directive } : null;
 };
-
 const matchesBlockBoundary = (
   startKeyword: DirectiveKeyword,
   endKeyword: "endif" | "endfor",
@@ -290,6 +347,7 @@ const matchesBlockBoundary = (
 };
 
 const matchIgnoreBlock = (text: string, index: number): string | null => {
+  if (!text.startsWith("<!--", index)) return null;
   const start = text.slice(index).match(IGNORE_START)?.[0];
   if (!start) {
     return null;
@@ -305,28 +363,6 @@ const matchIgnoreBlock = (text: string, index: number): string | null => {
     index,
     index + start.length + endMatch.index + endMatch[0].length,
   );
-};
-
-const matchScriptOrStyleBlock = (
-  text: string,
-  index: number,
-): string | null => {
-  const lower = text.slice(index).toLowerCase();
-  const tag = lower.startsWith("<script")
-    ? "script"
-    : lower.startsWith("<style")
-      ? "style"
-      : null;
-  if (!tag) {
-    return null;
-  }
-
-  const endIndex = lower.indexOf(`</${tag}>`);
-  if (endIndex === NOT_FOUND) {
-    return text.slice(index);
-  }
-
-  return text.slice(index, index + endIndex + tag.length + 3);
 };
 
 const matchHtmlComment = (text: string, index: number): string | null => {
@@ -390,6 +426,7 @@ const matchCodeBlock = (
   index: number,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): { raw: string; content: string } | null => {
   if (!text.startsWith("!{", index)) {
     return null;
@@ -406,6 +443,7 @@ const matchCodeBlock = (
       text.slice(index + 2, end - 1),
       nodes,
       generatePlaceholder,
+      sourceOffset + index + 2,
     ),
   };
 };
@@ -415,6 +453,7 @@ const matchContentBlock = (
   index: number,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): { raw: string; content: string } | null => {
   if (!text.startsWith("@`", index)) {
     return null;
@@ -428,7 +467,12 @@ const matchContentBlock = (
   const inner = text.slice(index + 2, endIndex);
   return {
     raw: text.slice(index, endIndex + 1),
-    content: parseFragment(inner, nodes, generatePlaceholder),
+    content: parseFragment(
+      inner,
+      nodes,
+      generatePlaceholder,
+      sourceOffset + index + 2,
+    ),
   };
 };
 
@@ -437,6 +481,7 @@ const matchDirective = (
   index: number,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): { raw: string; content: string; keyword: DirectiveKeyword } | null => {
   if (text[index] !== "@") {
     return null;
@@ -475,7 +520,13 @@ const matchDirective = (
     return paramDirective;
   }
 
-  return matchTemplateDirective(text, index, nodes, generatePlaceholder);
+  return matchTemplateDirective(
+    text,
+    index,
+    nodes,
+    generatePlaceholder,
+    sourceOffset,
+  );
 };
 
 const matchBareKeyword = (
@@ -550,6 +601,7 @@ const matchTemplateDirective = (
   index: number,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): { raw: string; content: string; keyword: DirectiveKeyword } | null => {
   if (!text.startsWith("@template.", index)) {
     return null;
@@ -580,7 +632,12 @@ const matchTemplateDirective = (
     content:
       header +
       "(" +
-      parseInlineContentBlocks(args, nodes, generatePlaceholder) +
+      parseInlineContentBlocks(
+        args,
+        nodes,
+        generatePlaceholder,
+        sourceOffset + current + 1,
+      ) +
       ")",
     keyword: "template",
   };
@@ -590,17 +647,25 @@ const parseInlineContentBlocks = (
   text: string,
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
+  sourceOffset = 0,
 ): string => {
-  let content = text;
+  const parts: string[] = [];
+  let textStart = 0;
   let i = 0;
 
-  while (i < content.length) {
-    if (content[i] === '"') {
-      i = skipQuoted(content, i) + 1;
+  while (i < text.length) {
+    if (text[i] === '"') {
+      i = skipQuoted(text, i) + 1;
       continue;
     }
 
-    const block = matchContentBlock(content, i, nodes, generatePlaceholder);
+    const block = matchContentBlock(
+      text,
+      i,
+      nodes,
+      generatePlaceholder,
+      sourceOffset,
+    );
     if (!block) {
       i++;
       continue;
@@ -613,15 +678,17 @@ const parseInlineContentBlocks = (
       content: block.content,
       preNewLines: 0,
       originalText: block.raw,
-      index: i,
+      index: sourceOffset + i,
       length: block.raw.length,
       nodes,
     } satisfies ContentNode;
-    content = replaceAt(content, id, i, block.raw.length);
-    i += id.length;
+    parts.push(text.slice(textStart, i), id);
+    i += block.raw.length;
+    textStart = i;
   }
 
-  return content;
+  parts.push(text.slice(textStart));
+  return parts.join("");
 };
 
 const getPreNewLines = (text: string): number => {
@@ -644,10 +711,7 @@ const findClosingBacktick = (text: string, index: number): number | null => {
   return null;
 };
 
-const scanBalanced = (
-  text: string,
-  openIndex: number,
-): number | null => {
+const scanBalanced = (text: string, openIndex: number): number | null => {
   // Match JTE's TemplateParser: strings and content use raw delimiters;
   // Java comments and Unicode escapes do not alter template boundaries.
   const closing = [text[openIndex] === "(" ? ")" : "}"];
@@ -705,15 +769,6 @@ const placeholderGenerator = (text: string) => {
   };
 };
 
-const replaceAt = (
-  str: string,
-  replacement: string,
-  start: number,
-  length: number,
-): string => {
-  return str.slice(0, start) + replacement + str.slice(start + length);
-};
-
 type ParseErrorLocation = {
   start: { line: number; column: number };
   end: { line: number; column: number };
@@ -722,13 +777,9 @@ type ParseErrorLocation = {
 export class PrettierParseError extends SyntaxError {
   loc: ParseErrorLocation;
 
-  constructor(
-      message: string,
-      loc: ParseErrorLocation
-  ) {
+  constructor(message: string, loc: ParseErrorLocation) {
     super(message);
     this.name = "PrettierParseError";
     this.loc = loc;
   }
-
 }

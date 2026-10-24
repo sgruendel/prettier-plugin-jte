@@ -11,6 +11,7 @@ interface BaseNode {
   originalText: string;
   index: number;
   length: number;
+  context?: "attribute" | "attribute-value";
   nodes: { [id: string]: Node };
 }
 
