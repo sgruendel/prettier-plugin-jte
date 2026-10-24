@@ -324,6 +324,11 @@ const printCode = (content: string, preNewLines: number): builders.Doc => {
 };
 
 const normalizeCodeAssignments = (text: string): string => {
+  // Java translates Unicode escapes before recognizing literals and comments.
+  if (/\\u+[0-9a-f]{4}/iu.test(text)) {
+    return text;
+  }
+
   const parts: string[] = [];
   let start = 0;
   const normalize = (code: string) =>
@@ -551,14 +556,24 @@ const formatHeader = (
   const groups: {
     kind: string;
     nodes: (DirectiveNode | CodeNode)[];
+    comments: string[];
   }[] = [];
   let end = 0;
+  let cursor = 0;
+  let pendingComments: string[] = [];
 
   for (const [start, stop] of findPlaceholders(node.content)) {
-    if (!/^\s*$/u.test(node.content.slice(end, start))) {
+    const comments = readHeaderComments(node.content.slice(cursor, start));
+    if (!comments) {
       break;
     }
+    pendingComments.push(...comments);
     const child = node.nodes[node.content.slice(start, stop + 1)];
+    if (child?.type === "comment") {
+      pendingComments.push(child.content);
+      cursor = stop + 1;
+      continue;
+    }
     if (
       !child ||
       !(
@@ -572,12 +587,14 @@ const formatHeader = (
 
     const kind = child.type === "code" ? "code" : child.keyword;
     const previous = groups.at(-1);
-    if (previous?.kind === kind) {
+    if (previous?.kind === kind && !pendingComments.length) {
       previous.nodes.push(child);
     } else {
-      groups.push({ kind, nodes: [child] });
+      groups.push({ kind, nodes: [child], comments: pendingComments });
     }
+    pendingComments = [];
     end = stop + 1;
+    cursor = end;
   }
 
   if (!groups.length) {
@@ -585,27 +602,41 @@ const formatHeader = (
   }
 
   const content = node.content.slice(end).trimStart();
-  const doc = builders.join(
-    [builders.hardline, builders.hardline],
-    groups.map((group) =>
-      group.kind === "import"
-        ? printImports(
-            group.nodes.filter((child) => child.type === "directive"),
-          )
-        : builders.join(
-            builders.hardline,
-            group.nodes.map((child) =>
-              child.type === "code"
-                ? printCode(child.content, 0)
-                : ["@", normalizeDirectiveContent(child)],
-            ),
+  const doc = groups.map((group, index) => [
+    index === 0
+      ? []
+      : groups[index - 1].kind === group.kind
+        ? builders.hardline
+        : [builders.hardline, builders.hardline],
+    group.comments.flatMap((comment) => [comment, builders.hardline]),
+    group.kind === "import"
+      ? printImports(group.nodes.filter((child) => child.type === "directive"))
+      : builders.join(
+          builders.hardline,
+          group.nodes.map((child) =>
+            child.type === "code"
+              ? printCode(child.content, 0)
+              : ["@", normalizeDirectiveContent(child)],
           ),
-    ),
-  );
+        ),
+  ]);
   return {
     content,
     doc: content ? [doc, builders.hardline, builders.hardline] : doc,
   };
+};
+
+const readHeaderComments = (text: string): string[] | undefined => {
+  const comments = text.match(/<!--[\s\S]*?-->/gu) ?? [];
+  if (
+    text.replace(/<!--[\s\S]*?-->/gu, "").trim() ||
+    comments.some((comment) =>
+      /^<!--\s*prettier-ignore(?:-start|-end)?\s*-->$/u.test(comment),
+    )
+  ) {
+    return undefined;
+  }
+  return comments;
 };
 
 const formatImports = (
