@@ -19,6 +19,8 @@ It supports:
 - ``@`...` `` content blocks
 - `<%-- ... --%>` comments
 
+Imports are sorted alphabetically within groups: other imports, `javax.*` followed by `java.*`, then static imports. Blank lines separate these three groups and separate imports from parameters.
+
 It currently focuses on Java JTE syntax only. Kotlin `.kte` syntax is out of scope.
 
 ## Install
@@ -49,6 +51,7 @@ Example `.prettierrc`:
 
 ```jte
 @import org.example.Page
+
 @param Page page
 
 @if(page.getDescription() != null)

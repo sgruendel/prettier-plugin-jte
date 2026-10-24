@@ -1,7 +1,9 @@
 import { AstPath, Doc, Options, Printer } from "prettier";
 import { builders, utils } from "prettier/doc";
+import { type Ast, parseHtml } from "angular-html-parser";
 import {
   BlockNode,
+  CodeNode,
   ContentNode,
   DirectiveNode,
   ExpressionNode,
@@ -300,9 +302,11 @@ const printCommentBlock = (node: Node): builders.Doc => {
 
 const printCode = (content: string, preNewLines: number): builders.Doc => {
   const multiline = content.includes("\n");
-  const codeText = multiline
-    ? trimBlankEdgeLines(dedentText(content, false))
-    : content.trim();
+  const codeText = normalizeCodeAssignments(
+    multiline
+      ? trimBlankEdgeLines(dedentText(content, false))
+      : content.trim(),
+  );
   const code = builders.group(
     multiline
       ? [
@@ -318,6 +322,40 @@ const printCode = (content: string, preNewLines: number): builders.Doc => {
   return preNewLines > 1
     ? builders.group([builders.trim, builders.hardline, code])
     : code;
+};
+
+const normalizeCodeAssignments = (text: string): string => {
+  // Java translates Unicode escapes before recognizing literals and comments.
+  if (/\\u+[0-9a-f]{4}/iu.test(text)) {
+    return text;
+  }
+
+  const parts: string[] = [];
+  let start = 0;
+  const normalize = (code: string) =>
+    code.replace(/(?<![=!<>+\-*/%&|^])[ \t]*=[ \t]*(?!=)/gu, " = ");
+
+  for (let i = 0; i < text.length; i++) {
+    let end: number;
+    if (text[i] === '"' || text[i] === "'") {
+      end = skipQuotedText(text, i) + 1;
+    } else if (text.startsWith("//", i)) {
+      const lineEnd = text.indexOf("\n", i + 2);
+      end = lineEnd === NOT_FOUND ? text.length : lineEnd;
+    } else if (text.startsWith("/*", i)) {
+      const commentEnd = text.indexOf("*/", i + 2);
+      end = commentEnd === NOT_FOUND ? text.length : commentEnd + 2;
+    } else {
+      continue;
+    }
+
+    parts.push(normalize(text.slice(start, i)), text.slice(i, end));
+    start = end;
+    i = end - 1;
+  }
+
+  parts.push(normalize(text.slice(start)));
+  return parts.join("");
 };
 
 const printContent = (
@@ -362,35 +400,30 @@ export const embed: Printer<Node>["embed"] = () => {
       return undefined;
     }
 
+    const header = node.type === "root" ? formatHeader(node) : undefined;
     const mapped = await Promise.all(
-      splitAtElse(node).map(async (content) => {
+      splitAtElse(node, header?.content).map(async (content) => {
+        const ignored = findIgnoredPlaceholders(content);
+        const imports = formatImports(node, content, ignored);
         let doc;
         if (content in node.nodes) {
           doc = content;
         } else {
-          doc = await textToDoc(content, {
+          doc = await textToDoc(imports.content, {
             ...options,
             parser: "html",
           });
         }
-
-        let ignoreDoc = false;
 
         return utils.mapDoc(doc, (currentDoc) => {
           if (typeof currentDoc !== "string") {
             return separateAfterTemplateCalls(currentDoc);
           }
 
-          if (currentDoc === "<!-- prettier-ignore -->") {
-            ignoreDoc = true;
-            return currentDoc;
-          }
-
           const idxs = findPlaceholders(currentDoc).filter(
             ([start, end]) => currentDoc.slice(start, end + 1) in node.nodes,
           );
           if (!idxs.length) {
-            ignoreDoc = false;
             return currentDoc;
           }
 
@@ -401,8 +434,8 @@ export const embed: Printer<Node>["embed"] = () => {
             if (lastEnd < start) {
               const between = currentDoc.slice(lastEnd, start);
               res.push(
-                !ignoreDoc &&
-                  previousPlaceholder &&
+                previousPlaceholder &&
+                  !ignored.has(previousPlaceholder) &&
                   /^\s+$/u.test(between) &&
                   isTemplatePlaceholder(node, previousPlaceholder)
                   ? builders.hardline
@@ -411,10 +444,25 @@ export const embed: Printer<Node>["embed"] = () => {
             }
 
             const placeholder = currentDoc.slice(start, end + 1);
-            if (ignoreDoc) {
+            if (ignored.has(placeholder)) {
               res.push(node.nodes[placeholder].originalText);
             } else {
-              const printed = path.call(print, "nodes", placeholder);
+              const child = node.nodes[placeholder];
+              let printed =
+                imports.docs.get(placeholder) ??
+                path.call(print, "nodes", placeholder);
+              if (
+                child.type === "directive" &&
+                child.keyword === "param" &&
+                child.preNewLines < 2 &&
+                hasPrecedingImport(node, placeholder)
+              ) {
+                printed = builders.group([
+                  builders.trim,
+                  builders.hardline,
+                  printed,
+                ]);
+              }
               res.push(
                 isTemplatePlaceholder(node, placeholder)
                   ? builders.label(TEMPLATE_PLACEHOLDER_LABEL, printed)
@@ -429,8 +477,8 @@ export const embed: Printer<Node>["embed"] = () => {
           if (lastEnd > 0 && currentDoc.length > lastEnd) {
             const trailing = currentDoc.slice(lastEnd);
             if (
-              !ignoreDoc &&
               previousPlaceholder &&
+              !ignored.has(previousPlaceholder) &&
               isTemplatePlaceholder(node, previousPlaceholder)
             ) {
               res.push(builders.hardline, trailing.trimStart());
@@ -439,7 +487,6 @@ export const embed: Printer<Node>["embed"] = () => {
             }
           }
 
-          ignoreDoc = false;
           return res;
         });
       }),
@@ -461,8 +508,254 @@ export const embed: Printer<Node>["embed"] = () => {
       return embedContent(path as AstPath<Node>, node, mapped);
     }
 
-    return [...mapped, builders.hardline];
+    return [
+      header?.doc ?? [],
+      header ? stripLeadingLines(mapped) : mapped,
+      builders.hardline,
+    ];
   };
+};
+
+const stripLeadingLines = (doc: builders.Doc): builders.Doc => {
+  let hasContent = false;
+  const strip = (part: builders.Doc): builders.Doc => {
+    if (hasContent) {
+      return part;
+    }
+    if (typeof part === "string") {
+      hasContent = part.length > 0;
+      return part;
+    }
+    if (Array.isArray(part)) {
+      return part.map(strip);
+    }
+    if (isLineDoc(part)) {
+      return "";
+    }
+    if (part && "contents" in part) {
+      return { ...part, contents: strip(part.contents) };
+    }
+    if (part?.type === "fill") {
+      return { ...part, parts: part.parts.map(strip) };
+    }
+    return part;
+  };
+  return strip(doc);
+};
+
+const formatHeader = (
+  node: Node,
+): { content: string; doc: builders.Doc } | undefined => {
+  const groups: {
+    kind: string;
+    nodes: (DirectiveNode | CodeNode)[];
+    comments: string[];
+  }[] = [];
+  let end = 0;
+  let cursor = 0;
+  let pendingComments: string[] = [];
+
+  for (const [start, stop] of findPlaceholders(node.content)) {
+    const comments = readHeaderComments(node.content.slice(cursor, start));
+    if (!comments) {
+      break;
+    }
+    pendingComments.push(...comments);
+    const child = node.nodes[node.content.slice(start, stop + 1)];
+    if (child?.type === "comment") {
+      pendingComments.push(child.content);
+      cursor = stop + 1;
+      continue;
+    }
+    if (
+      !child ||
+      !(
+        child.type === "code" ||
+        (child.type === "directive" &&
+          ["import", "param"].includes(child.keyword))
+      )
+    ) {
+      break;
+    }
+
+    const kind = child.type === "code" ? "code" : child.keyword;
+    const previous = groups.at(-1);
+    if (previous?.kind === kind && !pendingComments.length) {
+      previous.nodes.push(child);
+    } else {
+      groups.push({ kind, nodes: [child], comments: pendingComments });
+    }
+    pendingComments = [];
+    end = stop + 1;
+    cursor = end;
+  }
+
+  if (!groups.length) {
+    return undefined;
+  }
+
+  const content = node.content.slice(end).trimStart();
+  const doc = groups.map((group, index) => [
+    index === 0
+      ? []
+      : groups[index - 1].kind === group.kind
+        ? builders.hardline
+        : [builders.hardline, builders.hardline],
+    group.comments.flatMap((comment) => [comment, builders.hardline]),
+    group.kind === "import"
+      ? printImports(group.nodes.filter((child) => child.type === "directive"))
+      : builders.join(
+          builders.hardline,
+          group.nodes.map((child) =>
+            child.type === "code"
+              ? printCode(child.content, 0)
+              : ["@", normalizeDirectiveContent(child)],
+          ),
+        ),
+  ]);
+  return {
+    content,
+    doc: content ? [doc, builders.hardline, builders.hardline] : doc,
+  };
+};
+
+const readHeaderComments = (text: string): string[] | undefined => {
+  const comments = text.match(/<!--[\s\S]*?-->/gu) ?? [];
+  if (
+    text.replace(/<!--[\s\S]*?-->/gu, "").trim() ||
+    comments.some((comment) =>
+      /^<!--\s*prettier-ignore(?:-start|-end)?\s*-->$/u.test(comment),
+    )
+  ) {
+    return undefined;
+  }
+  return comments;
+};
+
+const findIgnoredPlaceholders = (content: string): Set<string> => {
+  const ignored = new Set<string>();
+  if (!content.includes("prettier-ignore")) {
+    return ignored;
+  }
+
+  // Determine ignore scope before import collapsing or HTML document splitting.
+  const { rootNodes } = parseHtml(content, {
+    canSelfClose: true,
+    allowHtmComponentClosingTags: true,
+  });
+  const visit = (nodes: Ast.Node[]): void => {
+    let ignoreNext = false;
+    for (const node of nodes) {
+      if (node.kind === "comment" && node.value?.trim() === "prettier-ignore") {
+        ignoreNext = true;
+      } else if (node.kind === "text" && !node.value.trim()) {
+        continue;
+      } else if (ignoreNext) {
+        const original = content.slice(
+          node.sourceSpan.start.offset,
+          node.sourceSpan.end.offset,
+        );
+        for (const [start, end] of findPlaceholders(original)) {
+          ignored.add(original.slice(start, end + 1));
+        }
+        ignoreNext = false;
+      } else if ("children" in node) {
+        visit(node.children);
+      }
+    }
+  };
+  visit(rootNodes);
+  return ignored;
+};
+
+const formatImports = (
+  node: Node,
+  content: string,
+  ignored: ReadonlySet<string>,
+): { content: string; docs: Map<string, builders.Doc> } => {
+  const imports = findPlaceholders(content).flatMap(([start, end]) => {
+    const child = node.nodes[content.slice(start, end + 1)];
+    return child?.type === "directive" &&
+      child.keyword === "import" &&
+      !ignored.has(child.id)
+      ? [{ node: child, start, end }]
+      : [];
+  });
+  const docs = new Map<string, builders.Doc>();
+  const parts: string[] = [];
+  let lastEnd = 0;
+
+  for (let i = 0; i < imports.length; i++) {
+    const first = imports[i];
+    const run = [first.node];
+    let end = first.end + 1;
+    while (
+      i + 1 < imports.length &&
+      /^\s*$/u.test(content.slice(end, imports[i + 1].start))
+    ) {
+      const next = imports[++i];
+      run.push(next.node);
+      end = next.end + 1;
+    }
+
+    const printed = printImports(run);
+    // One placeholder represents the whole run, so source blank lines cannot
+    // interfere with the spacing between sorted import groups.
+    docs.set(
+      first.node.id,
+      builders.group(
+        first.node.preNewLines > 1
+          ? [builders.trim, builders.hardline, printed]
+          : printed,
+        { shouldBreak: first.node.preNewLines > 0 },
+      ),
+    );
+    parts.push(content.slice(lastEnd, first.start), first.node.id);
+    lastEnd = end;
+  }
+
+  parts.push(content.slice(lastEnd));
+  return { content: parts.join(""), docs };
+};
+
+const printImports = (imports: DirectiveNode[]): builders.Doc => {
+  const groups: string[][] = [[], [], [], []];
+  for (const node of imports) {
+    const target = node.content.slice("import".length).trim();
+    const group = /^static\s/u.test(target)
+      ? 3
+      : target.startsWith("javax.")
+        ? 1
+        : target.startsWith("java.")
+          ? 2
+          : 0;
+    groups[group].push(target.replace(/^static\s+/u, "static "));
+  }
+  groups.forEach((group) => group.sort());
+
+  return builders.join(
+    [builders.hardline, builders.hardline],
+    [groups[0], [...groups[1], ...groups[2]], groups[3]]
+      .filter((group) => group.length > 0)
+      .map((group) =>
+        builders.join(
+          builders.hardline,
+          group.map((target) => `@import ${target}`),
+        ),
+      ),
+  );
+};
+
+const hasPrecedingImport = (node: Node, placeholder: string): boolean => {
+  const preceding = node.content
+    .slice(0, node.content.indexOf(placeholder))
+    .trimEnd();
+  return Object.values(node.nodes).some(
+    (child) =>
+      child.type === "directive" &&
+      child.keyword === "import" &&
+      preceding.endsWith(child.id),
+  );
 };
 
 const separateAfterTemplateCalls = (doc: builders.Doc): builders.Doc => {
@@ -814,19 +1107,19 @@ const splitTemplateArguments = (text: string): string[] => {
   return args;
 };
 
-const splitAtElse = (node: Node): string[] => {
+const splitAtElse = (node: Node, content = node.content): string[] => {
   const elseNodes = Object.values(node.nodes).filter(
     (current): current is DirectiveNode =>
       current.type === "directive" &&
       ["else", "elseif"].includes(current.keyword) &&
-      node.content.search(current.id) !== NOT_FOUND,
+      content.search(current.id) !== NOT_FOUND,
   );
   if (!elseNodes.length) {
-    return [node.content];
+    return [content];
   }
 
   const re = new RegExp(`(${elseNodes.map((entry) => entry.id).join(")|(")})`);
-  return node.content.split(re).filter(Boolean);
+  return content.split(re).filter(Boolean);
 };
 
 export const findPlaceholders = (text: string): [number, number][] => {
