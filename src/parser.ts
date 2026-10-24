@@ -139,7 +139,7 @@ const parseFragment = (
       continue;
     }
 
-    const code = matchCodeBlock(content, i);
+    const code = matchCodeBlock(content, i, nodes, generatePlaceholder);
     if (code) {
       const id = generatePlaceholder();
       nodes[id] = {
@@ -373,7 +373,7 @@ const matchExpression = (
   }
 
   const openIndex = index + prefix.length - 1;
-  const end = scanBalanced(text, openIndex, "{", "}");
+  const end = scanBalanced(text, openIndex);
   if (end === null) {
     return null;
   }
@@ -388,19 +388,25 @@ const matchExpression = (
 const matchCodeBlock = (
   text: string,
   index: number,
+  nodes: { [id: string]: Node },
+  generatePlaceholder: () => string,
 ): { raw: string; content: string } | null => {
   if (!text.startsWith("!{", index)) {
     return null;
   }
 
-  const end = scanBalanced(text, index + 1, "{", "}");
+  const end = scanBalanced(text, index + 1);
   if (end === null) {
     return null;
   }
 
   return {
     raw: text.slice(index, end),
-    content: text.slice(index + 2, end - 1),
+    content: parseInlineContentBlocks(
+      text.slice(index + 2, end - 1),
+      nodes,
+      generatePlaceholder,
+    ),
   };
 };
 
@@ -508,7 +514,7 @@ const matchParenDirective = (
     return null;
   }
 
-  const end = scanBalanced(text, current, "(", ")");
+  const end = scanBalanced(text, current);
   if (end === null) {
     return null;
   }
@@ -561,7 +567,7 @@ const matchTemplateDirective = (
     return null;
   }
 
-  const end = scanBalanced(text, current, "(", ")");
+  const end = scanBalanced(text, current);
   if (end === null) {
     return null;
   }
@@ -589,6 +595,11 @@ const parseInlineContentBlocks = (
   let i = 0;
 
   while (i < content.length) {
+    if (content[i] === '"') {
+      i = skipQuoted(content, i) + 1;
+      continue;
+    }
+
     const block = matchContentBlock(content, i, nodes, generatePlaceholder);
     if (!block) {
       i++;
@@ -621,56 +632,50 @@ const getPreNewLines = (text: string): number => {
 };
 
 const findClosingBacktick = (text: string, index: number): number | null => {
-  const endIndex = text.indexOf("`", index);
-  return endIndex === NOT_FOUND ? null : endIndex;
+  let depth = 1;
+  for (let i = index; i < text.length; i++) {
+    if (text.startsWith("@`", i)) {
+      depth++;
+      i++;
+    } else if (text[i] === "`" && --depth === 0) {
+      return i;
+    }
+  }
+  return null;
 };
 
 const scanBalanced = (
   text: string,
   openIndex: number,
-  openChar: string,
-  closeChar: string,
 ): number | null => {
-  let depth = 0;
-  let i = openIndex;
-
-  while (i < text.length) {
+  // Match JTE's TemplateParser: strings and content use raw delimiters;
+  // Java comments and Unicode escapes do not alter template boundaries.
+  const closing = [text[openIndex] === "(" ? ")" : "}"];
+  for (let i = openIndex + 1; i < text.length; i++) {
     const char = text[i];
-
-    if (char === '"' || char === "'") {
+    if (char === '"') {
       i = skipQuoted(text, i);
-      if (i >= text.length) {
+    } else if (text.startsWith("@`", i)) {
+      const end = findClosingBacktick(text, i + 2);
+      if (end === null) {
         return null;
       }
-    }
-
-    if (char === openChar) {
-      depth++;
-    } else if (char === closeChar) {
-      depth--;
-      if (depth === 0) {
+      i = end;
+    } else if (char === "(" || char === "{") {
+      closing.push(char === "(" ? ")" : "}");
+    } else if (char === ")" || char === "}") {
+      if (closing.pop() !== char) {
+        return null;
+      }
+      if (!closing.length) {
         return i + 1;
       }
     }
-
-    i++;
   }
-
   return null;
 };
 
 const skipQuoted = (text: string, index: number): number => {
-  if (text.startsWith('"""', index)) {
-    let i = index + 3;
-    while (i < text.length) {
-      if (text.startsWith('"""', i) && !isEscaped(text, i)) {
-        return i + 2;
-      }
-      i++;
-    }
-    return text.length;
-  }
-
   const quote = text[index];
   let i = index + 1;
   while (i < text.length) {
@@ -684,14 +689,6 @@ const skipQuoted = (text: string, index: number): number => {
     i++;
   }
   return text.length;
-};
-
-const isEscaped = (text: string, index: number): boolean => {
-  let backslashes = 0;
-  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
-    backslashes++;
-  }
-  return backslashes % 2 === 1;
 };
 
 const placeholderGenerator = (text: string) => {

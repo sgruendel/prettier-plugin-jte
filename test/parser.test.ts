@@ -2,6 +2,33 @@ import { expect, test } from "vitest";
 import { parse, PrettierParseError } from "../src/parser";
 import { ParserOptions } from "prettier";
 
+test.each([
+  ["code", "!{var x=1; // see <b> tag}"],
+  ["code", "!{var x=1; /* see <b> tag}"],
+  ["code", String.raw`!{if (a) \u007b}`],
+  ["code", String.raw`!{\u007d}`],
+  ["code", String.raw`!{var text=\u0022}`],
+  ["code", '!{var text="} // @`<b>raw</b>`";}'],
+  ["code", '!{var text="escaped \\" }";}'],
+  ["code", "!{var x=fn(() -> { return 1; });}"],
+  ["expression", "${value // see <b> tag}"],
+  ["expression", "${value /* see <b> tag}"],
+  ["expression", "${value + \\u007b}"],
+  ["directive", '@template.example(label="\\u0041", text="a,b")'],
+  ["directive", "@template.example(value /* see <b> tag)"],
+])("uses JTE raw boundaries for %s: %s", async (type, source) => {
+  const root = await parse(`${source}\n<p>after</p>`, {} as ParserOptions);
+  const nodes = Object.values(root.nodes);
+
+  expect(nodes).toHaveLength(1);
+  expect(nodes[0]).toMatchObject({
+    type,
+    originalText: source,
+    length: source.length,
+  });
+  expect(root.content).toEqual(`${nodes[0].id}\n<p>after</p>`);
+});
+
 test("keeps broken expression text untouched", async () => {
   expect(
     (await parse("<div>${ user.getName( </div>", {} as ParserOptions)).content,

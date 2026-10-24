@@ -45,7 +45,7 @@ const printNode = (
     case "ignore":
       return node.content;
     case "code":
-      return printCode(node.content, node.preNewLines);
+      return printCode(path, node, printChild);
     case "content":
       return printContent(path, node, printChild);
   }
@@ -300,22 +300,39 @@ const printCommentBlock = (node: Node): builders.Doc => {
     : comment;
 };
 
-const printCode = (content: string, preNewLines: number): builders.Doc => {
+const printCode = (
+  path: AstPath<Node>,
+  node: CodeNode,
+  printChild?: (path: AstPath<Node>) => builders.Doc,
+): builders.Doc => {
+  const { content, preNewLines } = node;
   const multiline = content.includes("\n");
+  const hasContentBlock = findPlaceholders(content).some(
+    ([start, end]) => node.nodes[content.slice(start, end + 1)]?.type === "content",
+  );
   const codeText = normalizeCodeAssignments(
     multiline
       ? trimBlankEdgeLines(dedentText(content, false))
       : content.trim(),
   );
+  const printLine = (line: string) =>
+    interpolatePlaceholders(path, node, line, printChild);
   const code = builders.group(
     multiline
       ? [
           "!{",
-          builders.indent(getMultilineGroup(codeText)),
+          builders.indent(getMultilineGroup(codeText, printLine)),
           builders.hardline,
           "}",
         ]
-      : ["!{", codeText, "}"],
+      : hasContentBlock
+        ? [
+            "!{",
+            builders.indent([builders.softline, printLine(codeText)]),
+            builders.softline,
+            "}",
+          ]
+        : ["!{", printLine(codeText), "}"],
     { shouldBreak: preNewLines > 0 },
   );
 
@@ -400,7 +417,12 @@ export const embed: Printer<Node>["embed"] = () => {
       return undefined;
     }
 
-    const header = node.type === "root" ? formatHeader(node) : undefined;
+    const header = node.type === "root"
+      ? formatHeader(
+          path as AstPath<Node>,
+          print as (path: AstPath<Node>) => builders.Doc,
+        )
+      : undefined;
     const mapped = await Promise.all(
       splitAtElse(node, header?.content).map(async (content) => {
         const ignored = findIgnoredPlaceholders(content);
@@ -544,8 +566,10 @@ const stripLeadingLines = (doc: builders.Doc): builders.Doc => {
 };
 
 const formatHeader = (
-  node: Node,
+  path: AstPath<Node>,
+  printChild: (path: AstPath<Node>) => builders.Doc,
 ): { content: string; doc: builders.Doc } | undefined => {
+  const node = path.node;
   const groups: {
     kind: string;
     nodes: (DirectiveNode | CodeNode)[];
@@ -608,7 +632,7 @@ const formatHeader = (
           builders.hardline,
           group.nodes.map((child) =>
             child.type === "code"
-              ? printCode(child.content, 0)
+              ? printCode(path, { ...child, preNewLines: 0 }, printChild)
               : ["@", normalizeDirectiveContent(child)],
           ),
         ),
@@ -882,7 +906,10 @@ const embedContent = (
   ]);
 };
 
-const getMultilineGroup = (content: string): builders.Group => {
+const getMultilineGroup = (
+  content: string,
+  printLine: (line: string) => builders.Doc = (line) => line,
+): builders.Group => {
   const lines = content.split("\n");
   const indentSizes = lines
     .slice(1)
@@ -893,11 +920,13 @@ const getMultilineGroup = (content: string): builders.Group => {
   return builders.group(
     lines.map((line, i) => [
       builders.hardline,
-      i === 0
-        ? line.trim()
-        : line.trim()
-          ? line.slice(minIndent).trimEnd()
-          : "",
+      printLine(
+        i === 0
+          ? line.trim()
+          : line.trim()
+            ? line.slice(minIndent).trimEnd()
+            : "",
+      ),
     ]),
   );
 };
