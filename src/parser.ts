@@ -591,6 +591,12 @@ const parseInlineContentBlocks = (
   nodes: { [id: string]: Node },
   generatePlaceholder: () => string,
 ): string => {
+  // Java translates Unicode escapes before recognizing literals and comments.
+  // Preserve the text when raw delimiters cannot reliably identify content.
+  if (/\\u+[0-9a-f]{4}/iu.test(text)) {
+    return text;
+  }
+
   let content = text;
   let i = 0;
 
