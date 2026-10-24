@@ -139,7 +139,7 @@ const parseFragment = (
       continue;
     }
 
-    const code = matchCodeBlock(content, i);
+    const code = matchCodeBlock(content, i, nodes, generatePlaceholder);
     if (code) {
       const id = generatePlaceholder();
       nodes[id] = {
@@ -388,6 +388,8 @@ const matchExpression = (
 const matchCodeBlock = (
   text: string,
   index: number,
+  nodes: { [id: string]: Node },
+  generatePlaceholder: () => string,
 ): { raw: string; content: string } | null => {
   if (!text.startsWith("!{", index)) {
     return null;
@@ -400,7 +402,11 @@ const matchCodeBlock = (
 
   return {
     raw: text.slice(index, end),
-    content: text.slice(index + 2, end - 1),
+    content: parseInlineContentBlocks(
+      text.slice(index + 2, end - 1),
+      nodes,
+      generatePlaceholder,
+    ),
   };
 };
 
@@ -589,6 +595,16 @@ const parseInlineContentBlocks = (
   let i = 0;
 
   while (i < content.length) {
+    if (content[i] === '"' || content[i] === "'") {
+      i = skipQuoted(content, i) + 1;
+      continue;
+    }
+    const commentEnd = skipJavaComment(content, i);
+    if (commentEnd !== null) {
+      i = commentEnd;
+      continue;
+    }
+
     const block = matchContentBlock(content, i, nodes, generatePlaceholder);
     if (!block) {
       i++;
@@ -637,6 +653,21 @@ const scanBalanced = (
   while (i < text.length) {
     const char = text[i];
 
+    const commentEnd = skipJavaComment(text, i);
+    if (commentEnd !== null) {
+      i = commentEnd;
+      continue;
+    }
+
+    if (text.startsWith("@`", i)) {
+      const end = findClosingBacktick(text, i + 2);
+      if (end === null) {
+        return null;
+      }
+      i = end + 1;
+      continue;
+    }
+
     if (char === '"' || char === "'") {
       i = skipQuoted(text, i);
       if (i >= text.length) {
@@ -656,6 +687,18 @@ const scanBalanced = (
     i++;
   }
 
+  return null;
+};
+
+const skipJavaComment = (text: string, index: number): number | null => {
+  if (text.startsWith("//", index)) {
+    const end = text.indexOf("\n", index + 2);
+    return end === NOT_FOUND ? text.length : end;
+  }
+  if (text.startsWith("/*", index)) {
+    const end = text.indexOf("*/", index + 2);
+    return end === NOT_FOUND ? text.length : end + 2;
+  }
   return null;
 };
 
