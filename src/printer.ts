@@ -118,6 +118,17 @@ const printTemplateDirective = (
   node: DirectiveNode,
   printChild?: (path: AstPath<Node>) => builders.Doc,
 ): builders.Doc => {
+  // The parser leaves Unicode-containing arguments raw. Preserve the entire
+  // call so argument splitting cannot rewrite literals or embedded HTML.
+  if (/\\u+[0-9a-f]{4}/iu.test(node.originalText)) {
+    const directive = builders.group(node.originalText, {
+      shouldBreak: node.preNewLines > 0,
+    });
+    return node.preNewLines > 1
+      ? builders.group([builders.trim, builders.hardline, directive])
+      : directive;
+  }
+
   const match = node.content.match(
     /^(template(?:\.[A-Za-z0-9_]+)+)\(([\s\S]*)\)$/,
   );
