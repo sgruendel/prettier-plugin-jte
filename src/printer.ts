@@ -306,7 +306,7 @@ const printCode = (
   printChild?: (path: AstPath<Node>) => builders.Doc,
 ): builders.Doc => {
   const { content, preNewLines } = node;
-  const multiline = node.originalText.includes("\n");
+  const multiline = content.includes("\n");
   const hasContentBlock = findPlaceholders(content).some(
     ([start, end]) => node.nodes[content.slice(start, end + 1)]?.type === "content",
   );
