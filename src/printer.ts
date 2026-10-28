@@ -636,6 +636,11 @@ const formatHeader = (
         ? builders.hardline
         : [builders.hardline, builders.hardline],
     group.comments.flatMap((comment) => [comment, builders.hardline]),
+    index === 0 &&
+    group.comments.length > 0 &&
+    ["import", "param"].includes(group.kind)
+      ? builders.hardline
+      : [],
     group.kind === "import"
       ? printImports(group.nodes.filter((child) => child.type === "directive"))
       : builders.join(
