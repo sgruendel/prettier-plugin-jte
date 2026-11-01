@@ -19,7 +19,8 @@ It supports:
 - ``@`...` `` content blocks
 - `<%-- ... --%>` comments
 
-Imports are sorted alphabetically within groups: other imports, `javax.*` followed by `java.*`, then static imports. Blank lines separate these three groups and separate imports from parameters.
+Imports are sorted alphabetically within groups: other imports, `javax.*` followed by `java.*`, then static imports.
+Blank lines separate these three groups and separate imports from parameters.
 
 Like Prettier, other blank lines are kept as they were in the source, with multiple blank lines collapsed into one.
 
@@ -38,7 +39,7 @@ Prettier will pick up the plugin automatically when it is installed locally and 
 You can also invoke it explicitly:
 
 ```bash
-npx prettier --write "src/**/*.jte" --parser jte
+npx prettier --write "src/main/*.jte" --parser jte
 ```
 
 Example `.prettierrc`:
