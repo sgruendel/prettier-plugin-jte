@@ -312,12 +312,11 @@ const printCode = (
   const { content, preNewLines } = node;
   const multiline = content.includes("\n");
   const hasContentBlock = findPlaceholders(content).some(
-    ([start, end]) => node.nodes[content.slice(start, end + 1)]?.type === "content",
+    ([start, end]) =>
+      node.nodes[content.slice(start, end + 1)]?.type === "content",
   );
   const codeText = normalizeCodeAssignments(
-    multiline
-      ? trimBlankEdgeLines(dedentText(content, false))
-      : content.trim(),
+    multiline ? trimBlankEdgeLines(dedentText(content, false)) : content.trim(),
   );
   const printLine = (line: string) =>
     interpolatePlaceholders(path, node, line, printChild);
@@ -427,12 +426,13 @@ export const embed: Printer<Node>["embed"] = () => {
       return node.originalText;
     }
 
-    const header = node.type === "root"
-      ? formatHeader(
-          path as AstPath<Node>,
-          print as (path: AstPath<Node>) => builders.Doc,
-        )
-      : undefined;
+    const header =
+      node.type === "root"
+        ? formatHeader(
+            path as AstPath<Node>,
+            print as (path: AstPath<Node>) => builders.Doc,
+          )
+        : undefined;
     const mapped = await Promise.all(
       splitAtElse(node, header?.content).map(async (content) => {
         const ignored = findIgnoredPlaceholders(content);
@@ -641,9 +641,7 @@ const formatHeader = (
     return [
       index === 0
         ? []
-        : separator(
-            groups[index - 1].kind !== group.kind || first.blankBefore,
-          ),
+        : separator(groups[index - 1].kind !== group.kind || first.blankBefore),
       group.comments.map((comment, commentIndex) => [
         commentIndex === 0 ? [] : separator(comment.blankBefore),
         comment.value,
