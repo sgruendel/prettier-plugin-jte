@@ -582,22 +582,23 @@ const formatHeader = (
   const node = path.node;
   const groups: {
     kind: string;
-    nodes: (DirectiveNode | CodeNode)[];
-    comments: string[];
+    nodes: HeaderEntry<DirectiveNode | CodeNode>[];
+    comments: HeaderEntry<string>[];
   }[] = [];
   let end = 0;
   let cursor = 0;
-  let pendingComments: string[] = [];
+  let pendingComments: HeaderEntry<string>[] = [];
 
   for (const [start, stop] of findPlaceholders(node.content)) {
-    const comments = readHeaderComments(node.content.slice(cursor, start));
-    if (!comments) {
+    const gap = readHeaderComments(node.content.slice(cursor, start));
+    if (!gap) {
       break;
     }
-    pendingComments.push(...comments);
+    pendingComments.push(...gap.comments);
+    const blankBefore = hasBlankLine(gap.rest);
     const child = node.nodes[node.content.slice(start, stop + 1)];
     if (child?.type === "comment") {
-      pendingComments.push(child.content);
+      pendingComments.push({ value: child.content, blankBefore });
       cursor = stop + 1;
       continue;
     }
@@ -614,10 +615,11 @@ const formatHeader = (
 
     const kind = child.type === "code" ? "code" : child.keyword;
     const previous = groups.at(-1);
+    const entry = { value: child, blankBefore };
     if (previous?.kind === kind && !pendingComments.length) {
-      previous.nodes.push(child);
+      previous.nodes.push(entry);
     } else {
-      groups.push({ kind, nodes: [child], comments: pendingComments });
+      groups.push({ kind, nodes: [entry], comments: pendingComments });
     }
     pendingComments = [];
     end = stop + 1;
@@ -628,47 +630,75 @@ const formatHeader = (
     return undefined;
   }
 
-  const content = node.content.slice(end).trimStart();
-  const doc = groups.map((group, index) => [
-    index === 0
-      ? []
-      : groups[index - 1].kind === group.kind
-        ? builders.hardline
-        : [builders.hardline, builders.hardline],
-    group.comments.flatMap((comment) => [comment, builders.hardline]),
-    index === 0 &&
-    group.comments.length > 0 &&
-    ["import", "param"].includes(group.kind)
-      ? builders.hardline
-      : [],
-    group.kind === "import"
-      ? printImports(group.nodes.filter((child) => child.type === "directive"))
-      : builders.join(
-          builders.hardline,
-          group.nodes.map((child) =>
+  // Like Prettier, keep (at most one) blank line wherever the source had one.
+  // Some separators are always blank: between different kinds of header
+  // entries and between opening comments and imports or params. Imports are
+  // re-sorted, so their spacing comes from the import groups alone.
+  const separator = (blank: boolean): builders.Doc =>
+    blank ? [builders.hardline, builders.hardline] : builders.hardline;
+  const doc = groups.map((group, index) => {
+    const [first] = group.comments.length ? group.comments : group.nodes;
+    return [
+      index === 0
+        ? []
+        : separator(
+            groups[index - 1].kind !== group.kind || first.blankBefore,
+          ),
+      group.comments.map((comment, commentIndex) => [
+        commentIndex === 0 ? [] : separator(comment.blankBefore),
+        comment.value,
+      ]),
+      group.comments.length
+        ? separator(
+            (index === 0 && ["import", "param"].includes(group.kind)) ||
+              group.nodes[0].blankBefore,
+          )
+        : [],
+      group.kind === "import"
+        ? printImports(
+            group.nodes.flatMap(({ value }) =>
+              value.type === "directive" ? [value] : [],
+            ),
+          )
+        : group.nodes.map(({ value: child, blankBefore }, nodeIndex) => [
+            nodeIndex === 0 ? [] : separator(blankBefore),
             child.type === "code"
               ? printCode(path, { ...child, preNewLines: 0 }, printChild)
               : ["@", normalizeDirectiveContent(child)],
-          ),
-        ),
-  ]);
+          ]),
+    ];
+  });
+  const content = node.content.slice(end).trimStart();
   return {
     content,
     doc: content ? [doc, builders.hardline, builders.hardline] : doc,
   };
 };
 
-const readHeaderComments = (text: string): string[] | undefined => {
-  const comments = text.match(/<!--[\s\S]*?-->/gu) ?? [];
-  if (
-    text.replace(/<!--[\s\S]*?-->/gu, "").trim() ||
-    comments.some((comment) =>
-      /^<!--\s*prettier-ignore(?:-start|-end)?\s*-->$/u.test(comment),
-    )
-  ) {
+type HeaderEntry<T> = { value: T; blankBefore: boolean };
+
+const hasBlankLine = (text: string): boolean => /\n[^\S\n]*\n/u.test(text);
+
+const readHeaderComments = (
+  text: string,
+): { comments: HeaderEntry<string>[]; rest: string } | undefined => {
+  const pattern = /<!--[\s\S]*?-->/gu;
+  if (text.replace(pattern, "").trim()) {
     return undefined;
   }
-  return comments;
+  const comments: HeaderEntry<string>[] = [];
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (/^<!--\s*prettier-ignore(?:-start|-end)?\s*-->$/u.test(match[0])) {
+      return undefined;
+    }
+    comments.push({
+      value: match[0],
+      blankBefore: hasBlankLine(text.slice(last, match.index)),
+    });
+    last = match.index + match[0].length;
+  }
+  return { comments, rest: text.slice(last) };
 };
 
 const findIgnoredPlaceholders = (content: string): Set<string> => {

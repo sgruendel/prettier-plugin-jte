@@ -21,6 +21,8 @@ It supports:
 
 Imports are sorted alphabetically within groups: other imports, `javax.*` followed by `java.*`, then static imports. Blank lines separate these three groups and separate imports from parameters.
 
+Like Prettier, other blank lines are kept as they were in the source, with multiple blank lines collapsed into one.
+
 It currently focuses on Java JTE syntax only. Kotlin `.kte` syntax is out of scope.
 
 ## Install
