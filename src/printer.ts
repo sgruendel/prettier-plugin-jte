@@ -426,17 +426,19 @@ export const embed: Printer<Node>["embed"] = () => {
       return node.originalText;
     }
 
+    const importOrder = getImportOrder(options);
     const header =
       node.type === "root"
         ? formatHeader(
             path as AstPath<Node>,
             print as (path: AstPath<Node>) => builders.Doc,
+            importOrder,
           )
         : undefined;
     const mapped = await Promise.all(
       splitAtElse(node, header?.content).map(async (content) => {
         const ignored = findIgnoredPlaceholders(content);
-        const imports = formatImports(node, content, ignored);
+        const imports = formatImports(node, content, ignored, importOrder);
         let doc;
         if (content in node.nodes) {
           doc = content;
@@ -578,6 +580,7 @@ const stripLeadingLines = (doc: builders.Doc): builders.Doc => {
 const formatHeader = (
   path: AstPath<Node>,
   printChild: (path: AstPath<Node>) => builders.Doc,
+  order: ImportOrder,
 ): { content: string; doc: builders.Doc } | undefined => {
   const node = path.node;
   const groups: {
@@ -657,6 +660,7 @@ const formatHeader = (
             group.nodes.flatMap(({ value }) =>
               value.type === "directive" ? [value] : [],
             ),
+            order,
           )
         : group.nodes.map(({ value: child, blankBefore }, nodeIndex) => [
             nodeIndex === 0 ? [] : separator(blankBefore),
@@ -739,6 +743,7 @@ const formatImports = (
   node: Node,
   content: string,
   ignored: ReadonlySet<string>,
+  order: ImportOrder,
 ): { content: string; docs: Map<string, builders.Doc> } => {
   const imports = findPlaceholders(content).flatMap(([start, end]) => {
     const child = node.nodes[content.slice(start, end + 1)];
@@ -765,7 +770,7 @@ const formatImports = (
       end = next.end + 1;
     }
 
-    const printed = printImports(run);
+    const printed = printImports(run, order);
     // One placeholder represents the whole run, so source blank lines cannot
     // interfere with the spacing between sorted import groups.
     docs.set(
@@ -785,24 +790,46 @@ const formatImports = (
   return { content: parts.join(""), docs };
 };
 
-const printImports = (imports: DirectiveNode[]): builders.Doc => {
+export type ImportOrder = "default" | "open-java-format";
+
+const getImportOrder = (options: Options): ImportOrder =>
+  options.jteImportOrder === "open-java-format"
+    ? "open-java-format"
+    : "default";
+
+const printImports = (
+  imports: DirectiveNode[],
+  order: ImportOrder,
+): builders.Doc => {
+  // default: other, javax.* + java.*, static
+  // open-java-format: static, everything else
   const groups: string[][] = [[], [], [], []];
   for (const node of imports) {
     const target = node.content.slice("import".length).trim();
-    const group = /^static\s/u.test(target)
-      ? 3
-      : target.startsWith("javax.")
-        ? 1
-        : target.startsWith("java.")
-          ? 2
-          : 0;
+    const isStatic = /^static\s/u.test(target);
+    const group =
+      order === "open-java-format"
+        ? isStatic
+          ? 0
+          : 1
+        : isStatic
+          ? 3
+          : target.startsWith("javax.")
+            ? 1
+            : target.startsWith("java.")
+              ? 2
+              : 0;
     groups[group].push(target.replace(/^static\s+/u, "static "));
   }
   groups.forEach((group) => group.sort());
+  const sections =
+    order === "open-java-format"
+      ? [groups[0], groups[1]]
+      : [groups[0], [...groups[1], ...groups[2]], groups[3]];
 
   return builders.join(
     [builders.hardline, builders.hardline],
-    [groups[0], [...groups[1], ...groups[2]], groups[3]]
+    sections
       .filter((group) => group.length > 0)
       .map((group) =>
         builders.join(

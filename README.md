@@ -21,6 +21,8 @@ It supports:
 
 Imports are sorted alphabetically within groups: other imports, `javax.*` followed by `java.*`, then static imports.
 Blank lines separate these three groups and separate imports from parameters.
+Set `jteImportOrder` to `open-java-format` to order imports like [open-java-format](https://openjavaformat.dev/)
+instead (see [Options](#options)).
 
 Like Prettier, other blank lines are kept as they were in the source, with multiple blank lines collapsed into one.
 
@@ -47,6 +49,19 @@ Example `.prettierrc`:
 ```json
 {
   "plugins": ["prettier-plugin-jte"]
+}
+```
+
+## Options
+
+| Option           | CLI flag             | Default   | Description                                                                                                                                                                                     |
+| ---------------- | -------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `jteImportOrder` | `--jte-import-order` | `default` | `default`: other imports, then `javax.*` and `java.*`, then static imports. `open-java-format`: static imports, then all other imports, each group sorted alphabetically like open-java-format. |
+
+```json
+{
+  "plugins": ["prettier-plugin-jte"],
+  "jteImportOrder": "open-java-format"
 }
 ```
 
