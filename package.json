@@ -38,7 +38,7 @@
     "@types/node": "^26.6.6",
     "prettier": "^3.10.1",
     "typescript": "^6.0.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   },
   "peerDependencies": {
     "prettier": "^3.0.0"
